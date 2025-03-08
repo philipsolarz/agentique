@@ -17,7 +17,7 @@ import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from .models import MessageModel, FinalAnswer
+from .models import MessageModel, FinalAnswer, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class Agent:
         role: str,
         content: Optional[str] = None,
         name: Optional[str] = None,
-        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        tool_calls: Optional[List[Any]] = None,
         tool_call_id: Optional[str] = None
     ) -> None:
         """
@@ -89,11 +89,45 @@ class Agent:
             tool_calls: Tool calls initiated by the assistant
             tool_call_id: ID of the tool call this message is responding to
         """
+        # Convert OpenAI API tool calls to our format if needed
+        converted_tool_calls = None
+        if tool_calls:
+            converted_tool_calls = []
+            for tc in tool_calls:
+                # Check if it's already a dict or our model
+                if isinstance(tc, dict):
+                    converted_tool_calls.append(tc)
+                elif isinstance(tc, ToolCall):
+                    converted_tool_calls.append(tc)
+                # Handle OpenAI API format
+                elif hasattr(tc, 'id') and hasattr(tc, 'function'):
+                    # Convert to our format
+                    converted_tool_calls.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    })
+                else:
+                    # Unknown format, try to convert to dict
+                    try:
+                        if hasattr(tc, "model_dump"):
+                            converted_tool_calls.append(tc.model_dump())
+                        elif hasattr(tc, "__dict__"):
+                            converted_tool_calls.append(tc.__dict__)
+                        else:
+                            logger.warning(f"Unknown tool call format: {type(tc)}. Trying to use as-is.")
+                            converted_tool_calls.append(tc)
+                    except Exception as e:
+                        logger.error(f"Error converting tool call: {e}")
+        
         message = MessageModel(
             role=role,
             content=content,
             name=name,
-            tool_calls=tool_calls,
+            tool_calls=converted_tool_calls,
             tool_call_id=tool_call_id
         )
         self.message_history.append(message)
