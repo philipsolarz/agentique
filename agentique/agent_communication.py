@@ -1,5 +1,5 @@
 """
-Agent communication tools for the agentic game AI library.
+Agent communication tools for the Agentique library.
 
 This module provides tools for agent-to-agent communication, allowing
 agents to interact with each other as part of a multi-agent system.
@@ -16,7 +16,7 @@ import asyncio
 from typing import Dict, Any, Union, Optional
 
 from .agent_registry import AgentRegistry
-from .models import FinalAnswer
+from .models import StructuredResult
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,8 @@ async def message_agent(
         )
         
         # Format the result based on its type
-        if isinstance(result, FinalAnswer):
-            # Convert FinalAnswer to dictionary
+        if isinstance(result, StructuredResult):
+            # Convert StructuredResult to dictionary
             return result.model_dump()
         elif isinstance(result, dict):
             # Already a dictionary

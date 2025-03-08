@@ -1,5 +1,5 @@
 """
-Tool registry for the agentic game AI library.
+Tool registry for the Agentique library.
 
 This module provides functionality for registering, managing, and executing
 tools that agents can use during interactions.
@@ -309,7 +309,7 @@ class ToolRegistry:
             result: Raw result from tool execution
             
         Returns:
-            Formatted result suitable for OpenAI API
+            Formatted result suitable for API
         """
         # If already a string, return as is
         if isinstance(result, str):
