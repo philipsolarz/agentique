@@ -1,5 +1,5 @@
 """
-Data models for the agentic game AI library.
+Data models for the Agentique library.
 
 This module contains Pydantic models for message representation,
 configuration, and structured outputs.
@@ -92,57 +92,19 @@ class ToolParameters(BaseModel):
     )
 
 
-class GameAction(str, Enum):
-    """Common game actions for the FinalAnswer model."""
-    MOVE = "move"
-    ATTACK = "attack"
-    DEFEND = "defend"
-    INTERACT = "interact"
-    SPEAK = "speak"
-    USE_ITEM = "use_item"
-    OBSERVE = "observe"
-    WAIT = "wait"
-    OTHER = "other"
-
-
-class FinalAnswer(BaseModel):
+class StructuredResult(BaseModel):
     """
-    Structured format for the agent's final answer in a game context.
+    Base model for structured outputs from agents.
     
-    Attributes:
-        action: The type of action being taken
-        message: A textual description or message
-        target: Optional target of the action (character, item, location)
-        confidence: Confidence level (0-1) in the answer
-        reasoning: Optional reasoning behind the decision
-        metadata: Optional additional metadata about the response
+    This is a generic base class that can be extended by users to create
+    domain-specific structured output formats. Unlike the previous game-specific
+    implementation, this base class doesn't make assumptions about the required fields.
+    
+    Users should subclass this model and add their specific fields.
     """
-    action: Union[GameAction, str] = Field(..., 
-        description="The type of action being taken")
-    message: str = Field(..., 
-        description="Description of the action or response")
-    target: Optional[str] = Field(None, 
-        description="Target of the action (character, item, location)")
-    confidence: float = Field(..., ge=0, le=1, 
-        description="Confidence level (0-1)")
-    reasoning: Optional[str] = Field(None, 
-        description="Reasoning behind the decision")
-    metadata: Dict[str, Any] = Field(default_factory=dict, 
-        description="Additional metadata about the action")
-    
+    # No required fields - this is just a base class
     model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "action": "move",
-                    "message": "I move cautiously toward the cave entrance",
-                    "target": "cave entrance",
-                    "confidence": 0.9,
-                    "reasoning": "The cave seems to be the source of the strange noises, and I need to investigate.",
-                    "metadata": {"energy_cost": 2, "time_taken": "1 minute"}
-                }
-            ]
-        }
+        extra="allow",  # Allow additional fields defined in subclasses
     )
 
 
@@ -186,12 +148,14 @@ class AgentConfig(BaseModel):
     Attributes:
         agent_id: Unique identifier for the agent
         system_prompt: Base system prompt or persona
-        model: OpenAI model name to use
+        model: Model name to use (defaults to OpenAI's gpt-4o-mini)
+        provider: AI provider to use ('openai' or 'anthropic')
         temperature: Sampling temperature for responses
         max_history: Maximum number of messages to keep in history
     """
     agent_id: str
     system_prompt: Optional[str] = None
-    model: str = "gpt-4"
+    model: str = "gpt-4o-mini"
+    provider: str = "openai"  # 'openai' or 'anthropic'
     temperature: float = 0.7
     max_history: int = 100

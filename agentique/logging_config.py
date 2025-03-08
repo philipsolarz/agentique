@@ -1,5 +1,5 @@
 """
-Logging configuration for the agentic game AI library.
+Logging configuration for the Agentique library.
 
 This module provides functions to set up logging for the library,
 making it easier to debug and monitor the library's behavior.
@@ -16,7 +16,7 @@ def configure_logging(
     output: Optional[Union[str, TextIO]] = None
 ) -> None:
     """
-    Configure logging for the agentic game AI library.
+    Configure logging for the Agentique library.
     
     Args:
         level: Logging level (default: INFO)
@@ -47,7 +47,7 @@ def configure_logging(
     handler.setFormatter(formatter)
     
     # Configure the library's logger
-    logger = logging.getLogger("agentic_game_ai")
+    logger = logging.getLogger("agentique")
     logger.setLevel(level)
     
     # Remove any existing handlers to avoid duplicates
@@ -60,7 +60,7 @@ def configure_logging(
     # Set propagation to False to prevent duplicate logs
     logger.propagate = False
     
-    logger.debug("Logging configured for agentic_game_ai")
+    logger.debug("Logging configured for agentique")
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -73,4 +73,4 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance
     """
-    return logging.getLogger(f"agentic_game_ai.{name}")
+    return logging.getLogger(f"agentique.{name}")

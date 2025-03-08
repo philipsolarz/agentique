@@ -1,10 +1,11 @@
 [project]
 name = "agentique"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "anthropic>=0.49.0",
     "openai>=1.65.4",
     "python-dotenv>=1.0.1",
 ]

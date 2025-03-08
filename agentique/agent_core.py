@@ -1,5 +1,5 @@
 """
-Core agent functionality for the agentic game AI library.
+Core agent functionality for the Agentique library.
 
 This module contains the Agent class which handles message history,
 tool selection, and conversation management.
@@ -10,14 +10,15 @@ Design Patterns:
 - Template Method: The run method defines a template for agent execution flow
 """
 
-from typing import List, Dict, Any, Optional, Union, Callable
+from typing import List, Dict, Any, Optional, Union, Callable, Type
 import json
 import copy
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
-from .models import MessageModel, FinalAnswer, ToolCall
+from .models import MessageModel, StructuredResult, ToolCall
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -36,40 +37,43 @@ class Agent:
     Manages an AI agent, its state, and conversation logic.
     
     The Agent class is the central component for handling interactions with
-    the OpenAI API, managing message history, and coordinating tool usage.
+    the LLM API, managing message history, and coordinating tool usage.
     """
     
     def __init__(
         self,
         agent_id: str,
-        openai_client,  # Will be typed properly once implemented
+        client,  # Will be an instance of BaseClientWrapper
         system_prompt: Optional[str] = None,
         tool_registry = None,  # Will be typed properly once implemented
-        max_history_messages: int = 100
+        max_history_messages: int = 100,
+        structured_output_model: Optional[Type[BaseModel]] = None,
     ):
         """
         Initialize an Agent instance.
         
         Args:
             agent_id: Unique identifier for this agent
-            openai_client: OpenAI API client wrapper instance
+            client: API client wrapper instance
             system_prompt: Base system prompt/persona for the agent
             tool_registry: Registry of tools available to the agent
             max_history_messages: Maximum number of messages to keep in history
+            structured_output_model: Optional Pydantic model for structuring output
         """
         self.agent_id = agent_id
-        self.openai_client = openai_client
+        self.client = client
         self.system_prompt = system_prompt
         self.tool_registry = tool_registry
         self.message_history: List[MessageModel] = []
         self.max_history_messages = max_history_messages
+        self.structured_output_model = structured_output_model or StructuredResult
         
         # Initialize with system message if provided
         if system_prompt:
             self.add_message("system", system_prompt)
             
-        # Always use final_answer as the default output mechanism
-        self.final_answer_tool_name = "final_answer"
+        # Always use structure_output as the default output mechanism
+        self.structured_output_tool_name = "structure_output"
     
     def add_message(
         self,
@@ -318,27 +322,27 @@ class Agent:
             
         return summary
     
-    async def _call_openai(
+    async def _call_api(
         self,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[Any] = "auto"
     ) -> Any:
         """
-        Call the OpenAI API with the current message history.
+        Call the LLM API with the current message history.
         
         Args:
             tools: Optional list of tool definitions
             tool_choice: Control tool choice behavior ("auto", "required", or None)
             
         Returns:
-            OpenAI API response
+            API response
         """
         try:
             # Get the formatted message history
             messages = self.get_messages()
             
             # Call the API
-            response = await self.openai_client.chat_completions(
+            response = await self.client.chat_completions(
                 messages=messages,
                 tools=tools,
                 tool_choice=tool_choice,
@@ -348,7 +352,7 @@ class Agent:
             return response
         except Exception as e:
             # Log the error and re-raise
-            logger.error(f"Error calling OpenAI API: {str(e)}", exc_info=True)
+            logger.error(f"Error calling LLM API: {str(e)}", exc_info=True)
             raise
     
     async def run(
@@ -356,29 +360,29 @@ class Agent:
         user_input: str,
         tools: Optional[List[str]] = None,
         system_prompt: Optional[str] = None,
-        final_answer_tool: Optional[str] = None,
+        structured_output_tool: Optional[str] = None,
         call_depth: int = 0,
         max_depth: Optional[int] = None
-    ) -> Union[str, FinalAnswer]:
+    ) -> Union[str, StructuredResult]:
         """
         Execute a single interaction turn.
         
-        This method processes a user input, queries the AI model, and returns
+        This method processes a user input, queries the LLM model, and returns
         the response. It maintains conversation history for context and
-        executes tools as requested by the model in a loop until a final
-        answer is provided.
+        executes tools as requested by the model in a loop until a structured
+        output is provided.
         
         Args:
             user_input: The user's input message
             tools: Optional list of tool names available for this interaction
             system_prompt: Optional override for the system prompt
-            final_answer_tool: Optional name of the tool that represents a final answer
-                              (defaults to "final_answer")
+            structured_output_tool: Optional name of the tool that represents a structured output
+                              (defaults to "structure_output")
             call_depth: Current recursion depth (for agent-to-agent calls)
             max_depth: Maximum allowed recursion depth
             
         Returns:
-            Either the assistant's text response or a structured FinalAnswer
+            Either the assistant's text response or a structured output
         """
         # Check recursion depth to prevent infinite loops
         if max_depth is None:
@@ -389,14 +393,14 @@ class Agent:
             logger.warning(error_msg)
             return error_msg
         
-        # Use the default final answer tool if none provided
-        final_answer_tool = final_answer_tool or self.final_answer_tool_name
+        # Use the default structured output tool if none provided
+        structured_output_tool = structured_output_tool or self.structured_output_tool_name
         
-        # Make sure the final answer tool is always available
-        if tools and final_answer_tool not in tools:
-            tools.append(final_answer_tool)
+        # Make sure the structured output tool is always available
+        if tools and structured_output_tool not in tools:
+            tools.append(structured_output_tool)
         elif not tools:
-            tools = [final_answer_tool]
+            tools = [structured_output_tool]
         
         # Add user message to history
         self.add_message("user", content=user_input)
@@ -432,8 +436,8 @@ class Agent:
             while iteration_count < MAX_TOOL_ITERATIONS:
                 iteration_count += 1
                 
-                # Call OpenAI API
-                response = await self._call_openai(tools=available_tools)
+                # Call LLM API
+                response = await self._call_api(tools=available_tools)
                 
                 # Extract the assistant message from the response
                 assistant_message = response.choices[0].message
@@ -452,16 +456,16 @@ class Agent:
                         function_call = tool_call.function
                         tool_name = function_call.name
                         
-                        # Check if this is the final answer tool
-                        if final_answer_tool and tool_name == final_answer_tool:
-                            # Parse arguments and return final answer
+                        # Check if this is the structured output tool
+                        if structured_output_tool and tool_name == structured_output_tool:
+                            # Parse arguments and return structured output
                             try:
                                 args = json.loads(function_call.arguments)
-                                # Validate and return as a FinalAnswer object
-                                return FinalAnswer(**args)
+                                # Validate and return as a StructuredResult object or subclass
+                                return self.structured_output_model(**args)
                             except Exception as e:
-                                logger.error(f"Error parsing final answer arguments: {e}")
-                                return f"Error in final answer format: {str(e)}"
+                                logger.error(f"Error parsing structured output arguments: {e}")
+                                return f"Error in structured output format: {str(e)}"
                         
                         # Regular tool - parse arguments
                         try:
@@ -505,7 +509,7 @@ class Agent:
                 
                 else:
                     # Unexpected response format
-                    error_msg = "Unexpected response format from OpenAI API"
+                    error_msg = "Unexpected response format from LLM API"
                     logger.error(error_msg)
                     raise ValueError(error_msg)
             
@@ -526,18 +530,18 @@ class Agent:
                     content=original_system_message
                 )
     
-    async def _handle_response(self, response: Any) -> Union[str, FinalAnswer]:
+    async def _handle_response(self, response: Any) -> Union[str, StructuredResult]:
         """
         Process model responses, including tool calling.
         
-        Handles responses from the OpenAI API, differentiating between
+        Handles responses from the LLM API, differentiating between
         regular text responses and tool call requests.
         
         Args:
-            response: OpenAI API response
+            response: API response
             
         Returns:
-            Processed result (string or FinalAnswer)
+            Processed result (string or StructuredResult)
         """
         # Extract the assistant message from the response
         assistant_message = response.choices[0].message
@@ -575,15 +579,15 @@ class Agent:
         
         # Handle unexpected response format
         else:
-            raise ValueError("Unexpected response format from OpenAI API")
+            raise ValueError("Unexpected response format from LLM API")
     
     async def continue_conversation(
         self, 
         tools: Optional[List[str]] = None,
-        final_answer_tool: Optional[str] = None,
+        structured_output_tool: Optional[str] = None,
         call_depth: int = 0,
         max_depth: Optional[int] = None
-    ) -> Union[str, FinalAnswer]:
+    ) -> Union[str, StructuredResult]:
         """
         Continue the conversation after tool calls.
         
@@ -592,13 +596,13 @@ class Agent:
         
         Args:
             tools: Optional list of tool names available for this continuation
-            final_answer_tool: Optional name of the tool that represents a final answer
-                              (defaults to "final_answer")
+            structured_output_tool: Optional name of the tool that represents structured output
+                              (defaults to "structure_output")
             call_depth: Current recursion depth (for agent-to-agent calls)
             max_depth: Maximum allowed recursion depth
             
         Returns:
-            Next response from the model or a structured FinalAnswer
+            Next response from the model or a structured output
         """
         # Check recursion depth to prevent infinite loops
         if max_depth is None:
@@ -609,14 +613,14 @@ class Agent:
             logger.warning(error_msg)
             return error_msg
         
-        # Use the default final answer tool if none provided
-        final_answer_tool = final_answer_tool or self.final_answer_tool_name
+        # Use the default structured output tool if none provided
+        structured_output_tool = structured_output_tool or self.structured_output_tool_name
         
-        # Make sure the final answer tool is always available
-        if tools and final_answer_tool not in tools:
-            tools.append(final_answer_tool)
+        # Make sure the structured output tool is always available
+        if tools and structured_output_tool not in tools:
+            tools.append(structured_output_tool)
         elif not tools:
-            tools = [final_answer_tool]
+            tools = [structured_output_tool]
         
         # Get available tool definitions
         available_tools = []
@@ -629,8 +633,8 @@ class Agent:
         while iteration_count < MAX_TOOL_ITERATIONS:
             iteration_count += 1
             
-            # Call OpenAI API with current history
-            response = await self._call_openai(tools=available_tools)
+            # Call LLM API with current history
+            response = await self._call_api(tools=available_tools)
             
             # Extract the assistant message from the response
             assistant_message = response.choices[0].message
@@ -649,16 +653,16 @@ class Agent:
                     function_call = tool_call.function
                     tool_name = function_call.name
                     
-                    # Check if this is the final answer tool
-                    if final_answer_tool and tool_name == final_answer_tool:
-                        # Parse arguments and return final answer
+                    # Check if this is the structured output tool
+                    if structured_output_tool and tool_name == structured_output_tool:
+                        # Parse arguments and return structured output
                         try:
                             args = json.loads(function_call.arguments)
-                            # Validate and return as a FinalAnswer object
-                            return FinalAnswer(**args)
+                            # Validate and return as a StructuredResult object or subclass
+                            return self.structured_output_model(**args)
                         except Exception as e:
-                            logger.error(f"Error parsing final answer arguments: {e}")
-                            return f"Error in final answer format: {str(e)}"
+                            logger.error(f"Error parsing structured output arguments: {e}")
+                            return f"Error in structured output format: {str(e)}"
                     
                     # Regular tool - parse arguments
                     try:
@@ -698,7 +702,7 @@ class Agent:
             
             else:
                 # Unexpected response format
-                error_msg = "Unexpected response format from OpenAI API"
+                error_msg = "Unexpected response format from LLM API"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
         

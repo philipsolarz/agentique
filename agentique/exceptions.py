@@ -1,17 +1,17 @@
 """
-Custom exceptions for the agentic game AI library.
+Custom exceptions for the Agentique library.
 
 This module defines custom exception classes to provide more
 specific error handling for the library.
 """
 
 
-class AgenticGameAIError(Exception):
+class AgenticError(Exception):
     """Base exception class for all library errors."""
     pass
 
 
-class ToolExecutionError(AgenticGameAIError):
+class ToolExecutionError(AgenticError):
     """Raised when a tool execution fails."""
     
     def __init__(self, tool_name: str, message: str, original_error: Exception = None):
@@ -20,7 +20,7 @@ class ToolExecutionError(AgenticGameAIError):
         super().__init__(f"Error executing tool '{tool_name}': {message}")
 
 
-class ToolNotFoundError(AgenticGameAIError):
+class ToolNotFoundError(AgenticError):
     """Raised when a requested tool is not found."""
     
     def __init__(self, tool_name: str):
@@ -28,7 +28,7 @@ class ToolNotFoundError(AgenticGameAIError):
         super().__init__(f"Tool not found: {tool_name}")
 
 
-class AgentNotFoundError(AgenticGameAIError):
+class AgentNotFoundError(AgenticError):
     """Raised when a requested agent is not found."""
     
     def __init__(self, agent_id: str):
@@ -36,15 +36,15 @@ class AgentNotFoundError(AgenticGameAIError):
         super().__init__(f"Agent not found: {agent_id}")
 
 
-class APIError(AgenticGameAIError):
-    """Raised when there's an error in the OpenAI API call."""
+class APIError(AgenticError):
+    """Raised when there's an error in the API call."""
     
     def __init__(self, message: str, status_code: int = None):
         self.status_code = status_code
         super().__init__(message)
 
 
-class MaxRecursionError(AgenticGameAIError):
+class MaxRecursionError(AgenticError):
     """Raised when the maximum recursion depth is exceeded."""
     
     def __init__(self, depth: int):
@@ -52,11 +52,11 @@ class MaxRecursionError(AgenticGameAIError):
         super().__init__(f"Maximum recursion depth ({depth}) exceeded")
 
 
-class InvalidArgumentError(AgenticGameAIError):
+class InvalidArgumentError(AgenticError):
     """Raised when invalid arguments are provided."""
     pass
 
 
-class MessageHistoryError(AgenticGameAIError):
+class MessageHistoryError(AgenticError):
     """Raised when there's an error with the message history."""
     pass

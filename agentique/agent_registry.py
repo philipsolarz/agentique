@@ -1,5 +1,5 @@
 """
-Agent registry for the agentic game AI library.
+Agent registry for the Agentique library.
 
 This module provides a registry for storing and retrieving agent instances,
 enabling agent-to-agent communication.
