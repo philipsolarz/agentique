@@ -71,9 +71,6 @@ class Agent:
         # Initialize with system message if provided
         if system_prompt:
             self.add_message("system", system_prompt)
-            
-        # Always use structure_output as the default output mechanism
-        self.structured_output_tool_name = "structure_output"
     
     def add_message(
         self,
@@ -325,7 +322,9 @@ class Agent:
     async def _call_api(
         self,
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[Any] = "auto"
+        tool_choice: Optional[Any] = "auto",
+        response_format: Optional[Dict[str, Any]] = None,
+        temperature: float = 0.7
     ) -> Any:
         """
         Call the LLM API with the current message history.
@@ -333,6 +332,8 @@ class Agent:
         Args:
             tools: Optional list of tool definitions
             tool_choice: Control tool choice behavior ("auto", "required", or None)
+            response_format: Optional format specification for the response
+            temperature: Sampling temperature for responses
             
         Returns:
             API response
@@ -341,12 +342,18 @@ class Agent:
             # Get the formatted message history
             messages = self.get_messages()
             
-            # Call the API
+            # For debugging, log the response format if present
+            if response_format:
+                schema = response_format.get("json_schema", {}).get("schema", {})
+                logger.debug(f"Using response_format schema: {json.dumps(schema, indent=2)}")
+            
+            # Call the API with appropriate parameters
             response = await self.client.chat_completions(
                 messages=messages,
                 tools=tools,
                 tool_choice=tool_choice,
-                temperature=0.7  # Default temperature, could be configurable in future
+                response_format=response_format,
+                temperature=temperature
             )
             
             return response
@@ -360,26 +367,25 @@ class Agent:
         user_input: str,
         tools: Optional[List[str]] = None,
         system_prompt: Optional[str] = None,
-        structured_output_tool: Optional[str] = None,
         call_depth: int = 0,
-        max_depth: Optional[int] = None
+        max_depth: Optional[int] = None,
+        temperature: float = 0.7
     ) -> Union[str, StructuredResult]:
         """
         Execute a single interaction turn.
         
         This method processes a user input, queries the LLM model, and returns
         the response. It maintains conversation history for context and
-        executes tools as requested by the model in a loop until a structured
-        output is provided.
+        executes tools as requested by the model in a loop until a response
+        is provided.
         
         Args:
             user_input: The user's input message
             tools: Optional list of tool names available for this interaction
             system_prompt: Optional override for the system prompt
-            structured_output_tool: Optional name of the tool that represents a structured output
-                              (defaults to "structure_output")
             call_depth: Current recursion depth (for agent-to-agent calls)
             max_depth: Maximum allowed recursion depth
+            temperature: Sampling temperature for responses
             
         Returns:
             Either the assistant's text response or a structured output
@@ -392,15 +398,6 @@ class Agent:
             error_msg = f"Maximum recursion depth ({max_depth}) exceeded"
             logger.warning(error_msg)
             return error_msg
-        
-        # Use the default structured output tool if none provided
-        structured_output_tool = structured_output_tool or self.structured_output_tool_name
-        
-        # Make sure the structured output tool is always available
-        if tools and structured_output_tool not in tools:
-            tools.append(structured_output_tool)
-        elif not tools:
-            tools = [structured_output_tool]
         
         # Add user message to history
         self.add_message("user", content=user_input)
@@ -424,10 +421,54 @@ class Agent:
                 self.message_history.insert(0, system_msg)
         
         try:
+            # If using OpenAI and structured output is desired, use response_format
+            response_format = None
+            use_native_structured_output = False
+            is_openai = hasattr(self.client, 'model') and 'gpt' in self.client.model.lower()
+            
+            if self.structured_output_model and is_openai:
+                # Check if the model supports structured outputs (gpt-4o and later)
+                if 'gpt-4o' in self.client.model or 'gpt-4.5' in self.client.model or 'o1-' in self.client.model or 'o3-' in self.client.model:
+                    response_format = self.structured_output_model.get_response_format()
+                    use_native_structured_output = True
+            
             # Get available tool definitions
             available_tools = []
             if tools and self.tool_registry:
                 available_tools = self.tool_registry.get_tool_definitions(tools)
+                
+                # Make sure all tools have strict mode enabled
+                for tool in available_tools:
+                    if "function" in tool:
+                        tool["function"]["strict"] = True
+            
+            # For structured output with OpenAI's supported models, use parse method
+            if use_native_structured_output and not available_tools:
+                try:
+                    messages = self.get_messages()
+                    result = await self.client.parse_structured_output(
+                        messages=messages,
+                        output_class=self.structured_output_model,
+                        temperature=temperature
+                    )
+                    
+                    # Check for refusal
+                    if isinstance(result, dict) and "refusal" in result:
+                        # Create assistant message with the refusal
+                        self.add_message("assistant", content=result["refusal"])
+                        return result["refusal"]
+                    
+                    # Add the assistant's structured output to history as a text message
+                    if hasattr(result, "model_dump"):
+                        content = json.dumps(result.model_dump(), indent=2)
+                    else:
+                        content = str(result)
+                    
+                    self.add_message("assistant", content=content)
+                    return result
+                except Exception as e:
+                    logger.error(f"Error with structured output parsing: {e}. Falling back to regular flow.")
+                    # Fall back to the regular flow
             
             # Start the conversation loop
             iteration_count = 0
@@ -436,11 +477,21 @@ class Agent:
             while iteration_count < MAX_TOOL_ITERATIONS:
                 iteration_count += 1
                 
-                # Call LLM API
-                response = await self._call_api(tools=available_tools)
+                # Call LLM API with appropriate format
+                response = await self._call_api(
+                    tools=available_tools,
+                    response_format=response_format,
+                    temperature=temperature
+                )
                 
                 # Extract the assistant message from the response
                 assistant_message = response.choices[0].message
+                
+                # Check for a refusal
+                if hasattr(assistant_message, 'refusal') and assistant_message.refusal:
+                    refusal_content = assistant_message.refusal
+                    self.add_message("assistant", content=refusal_content)
+                    return refusal_content
                 
                 # Check for tool calls
                 if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
@@ -456,18 +507,7 @@ class Agent:
                         function_call = tool_call.function
                         tool_name = function_call.name
                         
-                        # Check if this is the structured output tool
-                        if structured_output_tool and tool_name == structured_output_tool:
-                            # Parse arguments and return structured output
-                            try:
-                                args = json.loads(function_call.arguments)
-                                # Validate and return as a StructuredResult object or subclass
-                                return self.structured_output_model(**args)
-                            except Exception as e:
-                                logger.error(f"Error parsing structured output arguments: {e}")
-                                return f"Error in structured output format: {str(e)}"
-                        
-                        # Regular tool - parse arguments
+                        # Parse arguments
                         try:
                             arguments = json.loads(function_call.arguments)
                         except json.JSONDecodeError as e:
@@ -503,8 +543,19 @@ class Agent:
                         content=assistant_message.content
                     )
                     
+                    # Check if this is structured output in JSON format
+                    content = assistant_message.content
+                    if self.structured_output_model and content.strip().startswith('{') and content.strip().endswith('}'):
+                        try:
+                            # Try to parse as JSON and validate against the structured output model
+                            data = json.loads(content)
+                            return self.structured_output_model.model_validate(data)
+                        except (json.JSONDecodeError, ValueError):
+                            # If parsing fails, return the content as a string
+                            pass
+                    
                     # We have a final answer
-                    final_response = assistant_message.content
+                    final_response = content
                     break
                 
                 else:
@@ -530,63 +581,12 @@ class Agent:
                     content=original_system_message
                 )
     
-    async def _handle_response(self, response: Any) -> Union[str, StructuredResult]:
-        """
-        Process model responses, including tool calling.
-        
-        Handles responses from the LLM API, differentiating between
-        regular text responses and tool call requests.
-        
-        Args:
-            response: API response
-            
-        Returns:
-            Processed result (string or StructuredResult)
-        """
-        # Extract the assistant message from the response
-        assistant_message = response.choices[0].message
-        
-        # Handle tool calls
-        if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
-            # Add the message with tool calls to history
-            self.add_message(
-                role="assistant",
-                tool_calls=assistant_message.tool_calls
-            )
-            
-            # For now, just return information about the requested tool
-            tool_calls = assistant_message.tool_calls
-            tool_info = []
-            
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                function_args = tool_call.function.arguments
-                tool_info.append(f"{function_name}({function_args})")
-            
-            # Return a message indicating tool calls (placeholder)
-            return f"Tool calls requested: {', '.join(tool_info)} (function execution not yet implemented)"
-        
-        # Handle regular text response
-        elif hasattr(assistant_message, 'content') and assistant_message.content:
-            # Add the assistant's response to history
-            self.add_message(
-                role="assistant",
-                content=assistant_message.content
-            )
-            
-            # Return the content
-            return assistant_message.content
-        
-        # Handle unexpected response format
-        else:
-            raise ValueError("Unexpected response format from LLM API")
-    
     async def continue_conversation(
         self, 
         tools: Optional[List[str]] = None,
-        structured_output_tool: Optional[str] = None,
         call_depth: int = 0,
-        max_depth: Optional[int] = None
+        max_depth: Optional[int] = None,
+        temperature: float = 0.7
     ) -> Union[str, StructuredResult]:
         """
         Continue the conversation after tool calls.
@@ -596,10 +596,9 @@ class Agent:
         
         Args:
             tools: Optional list of tool names available for this continuation
-            structured_output_tool: Optional name of the tool that represents structured output
-                              (defaults to "structure_output")
             call_depth: Current recursion depth (for agent-to-agent calls)
             max_depth: Maximum allowed recursion depth
+            temperature: Sampling temperature for responses
             
         Returns:
             Next response from the model or a structured output
@@ -613,19 +612,24 @@ class Agent:
             logger.warning(error_msg)
             return error_msg
         
-        # Use the default structured output tool if none provided
-        structured_output_tool = structured_output_tool or self.structured_output_tool_name
+        # Set up response format for structured output if appropriate
+        response_format = None
+        is_openai = hasattr(self.client, 'model') and 'gpt' in self.client.model.lower()
         
-        # Make sure the structured output tool is always available
-        if tools and structured_output_tool not in tools:
-            tools.append(structured_output_tool)
-        elif not tools:
-            tools = [structured_output_tool]
+        if self.structured_output_model and is_openai:
+            # Check if the model supports structured outputs (gpt-4o and later)
+            if 'gpt-4o' in self.client.model or 'gpt-4.5' in self.client.model or 'o1-' in self.client.model or 'o3-' in self.client.model:
+                response_format = self.structured_output_model.get_response_format()
         
         # Get available tool definitions
         available_tools = []
         if tools and self.tool_registry:
             available_tools = self.tool_registry.get_tool_definitions(tools)
+            
+            # Make sure all tools have strict mode enabled
+            for tool in available_tools:
+                if "function" in tool:
+                    tool["function"]["strict"] = True
         
         # Start the continuation loop
         iteration_count = 0
@@ -634,10 +638,20 @@ class Agent:
             iteration_count += 1
             
             # Call LLM API with current history
-            response = await self._call_api(tools=available_tools)
+            response = await self._call_api(
+                tools=available_tools,
+                response_format=response_format,
+                temperature=temperature
+            )
             
             # Extract the assistant message from the response
             assistant_message = response.choices[0].message
+            
+            # Check for a refusal
+            if hasattr(assistant_message, 'refusal') and assistant_message.refusal:
+                refusal_content = assistant_message.refusal
+                self.add_message("assistant", content=refusal_content)
+                return refusal_content
             
             # Check for tool calls
             if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
@@ -653,18 +667,7 @@ class Agent:
                     function_call = tool_call.function
                     tool_name = function_call.name
                     
-                    # Check if this is the structured output tool
-                    if structured_output_tool and tool_name == structured_output_tool:
-                        # Parse arguments and return structured output
-                        try:
-                            args = json.loads(function_call.arguments)
-                            # Validate and return as a StructuredResult object or subclass
-                            return self.structured_output_model(**args)
-                        except Exception as e:
-                            logger.error(f"Error parsing structured output arguments: {e}")
-                            return f"Error in structured output format: {str(e)}"
-                    
-                    # Regular tool - parse arguments
+                    # Parse arguments
                     try:
                         arguments = json.loads(function_call.arguments)
                     except json.JSONDecodeError as e:
@@ -697,8 +700,19 @@ class Agent:
                     content=assistant_message.content
                 )
                 
-                # We have a final answer
-                return assistant_message.content
+                # Check if this is structured output in JSON format
+                content = assistant_message.content
+                if self.structured_output_model and content.strip().startswith('{') and content.strip().endswith('}'):
+                    try:
+                        # Try to parse as JSON and validate against the structured output model
+                        data = json.loads(content)
+                        return self.structured_output_model.model_validate(data)
+                    except (json.JSONDecodeError, ValueError):
+                        # If parsing fails, return the content as a string
+                        pass
+                
+                # Return the content as the final answer
+                return content
             
             else:
                 # Unexpected response format

@@ -8,7 +8,7 @@ communicate with each other to solve a complex problem.
 import os
 import asyncio
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
 from agentique import Agentique, StructuredResult, configure_logging
 from dotenv import load_dotenv
 
@@ -22,8 +22,8 @@ class ResearchResult(StructuredResult):
     """Research findings from the researcher agent"""
     topic: str = Field(..., description="The researched topic")
     facts: List[str] = Field(..., description="Key facts discovered")
-    sources: List[str] = Field(default_factory=list, description="Sources of information")
-    follow_up_questions: List[str] = Field(default_factory=list, description="Suggested follow-up questions")
+    sources: List[str] = Field(..., description="Sources of information")
+    follow_up_questions: List[str] = Field(..., description="Suggested follow-up questions")
 
 class AnalysisResult(StructuredResult):
     """Analysis from the analyst agent"""
@@ -89,44 +89,13 @@ async def main():
         description="Research a topic and return facts and sources"
     )
     
-    # Create specialist agents
-    researcher = agentique.create_agent(
-        agent_id="researcher",
-        system_prompt=(
-            "You are a research specialist. Your job is to gather facts and information "
-            "on topics requested by users. Be thorough and cite sources when possible. "
-            "Return your findings in a structured format."
-        ),
-        structured_output_model=ResearchResult
-    )
-    
-    analyst = agentique.create_agent(
-        agent_id="analyst",
-        system_prompt=(
-            "You are an analytical specialist. Your job is to analyze information and "
-            "provide insights. Consider implications, patterns, and draw conclusions from the data. "
-            "Rate your confidence in your analysis."
-        ),
-        structured_output_model=AnalysisResult
-    )
-    
-    writer = agentique.create_agent(
-        agent_id="writer",
-        system_prompt=(
-            "You are a writing specialist. Your job is to take information and analysis "
-            "and outline compelling articles or reports. Focus on engaging the intended audience "
-            "while accurately presenting the information."
-        ),
-        structured_output_model=ArticleOutline
-    )
-    
-    # Coordinator agent
+    # Create coordinator agent without structured output
     coordinator = agentique.create_agent(
         agent_id="coordinator",
         system_prompt=(
             "You are a coordination agent responsible for managing a research and writing project. "
-            "You'll delegate tasks to specialist agents (researcher, analyst, writer) and synthesize "
-            "their outputs into a cohesive result. Manage the workflow efficiently."
+            "You'll help the user create content about their requested topic. "
+            "Provide a step-by-step plan for how you would approach the topic."
         )
     )
     
@@ -138,13 +107,31 @@ async def main():
     user_request = f"Create an article about {user_topic}."
     print(f"User Request: {user_request}\n")
     
-    # Run the coordinator agent
-    coordinator_response = await coordinator.run(
-        user_input=user_request,
-        tools=["message_agent"]
-    )
-    
-    print(f"Coordinator's Final Response:\n{coordinator_response}\n")
+    try:
+        # Run the coordinator agent without message_agent tool
+        coordinator_response = await coordinator.run(
+            user_input=user_request
+        )
+        
+        print(f"Coordinator's Response:\n{coordinator_response}\n")
+        
+        # Now demonstrate using research_topic tool directly
+        print(f"Research on {user_topic}:")
+        
+        research_agent = agentique.create_agent(
+            agent_id="researcher",
+            system_prompt="You are a research specialist. Provide detailed information about topics."
+        )
+        
+        research_result = await research_agent.run(
+            user_input=f"Research the topic: {user_topic}",
+            tools=["research_topic"]
+        )
+        
+        print(f"Research Result:\n{research_result}\n")
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     asyncio.run(main())

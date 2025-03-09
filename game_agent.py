@@ -9,7 +9,7 @@ import os
 import asyncio
 from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 from agentique import Agentique, StructuredResult, configure_logging
 from dotenv import load_dotenv
 
@@ -32,23 +32,34 @@ class GameEventType(str, Enum):
     OTHER = "other"
 
 # Game-specific structured output model
+# Example simple nested model
+class GameMetadata(BaseModel):
+    """Structured metadata for game events"""
+    location: str = Field(..., description="Location where the event occurred")
+    time: str = Field(..., description="Time when the event occurred")
+    affected_entities: List[str] = Field(..., description="Entities affected by this event")
+
+# Example event types as string literals for maximum compatibility
+EVENT_TYPES = ["move", "attack", "defend", "interact", "speak", "use_item", "observe", "wait", "other"]
+
 class GameEvent(StructuredResult):
     """
     Structured format for game events.
     
     This extends the base StructuredResult for game-specific functionality.
     """
-    event_type: GameEventType = Field(..., 
-        description="The type of game event")
+    event_type: str = Field(..., 
+        description="The type of game event (one of: move, attack, defend, interact, speak, use_item, observe, wait, other)")
     message: str = Field(..., 
         description="Description of the event or response")
-    target: Optional[str] = Field(None, 
+    target: str = Field(..., 
         description="Target of the action (character, item, location)")
-    confidence: float = Field(..., ge=0, le=1, 
+    confidence: float = Field(...,
         description="Confidence level (0-1)")
-    reasoning: Optional[str] = Field(None, 
+    reasoning: str = Field(..., 
         description="Reasoning behind the decision")
-    metadata: Dict[str, Any] = Field(default_factory=dict, 
+    # Use a properly defined nested model instead of arbitrary Dict
+    metadata: GameMetadata = Field(...,
         description="Additional metadata about the event")
 
 # Game world simulation tools
@@ -135,24 +146,46 @@ async def main():
     for prompt in prompts:
         print(f"\nPlayer: {prompt}")
         
-        result = await game_agent.run(
-            user_input=prompt,
-            tools=["get_world_state", "get_entity_info"]
-        )
-        
-        # Handle the result
-        if isinstance(result, GameEvent):
-            print(f"Event Type: {result.event_type}")
-            print(f"Message: {result.message}")
-            if result.reasoning:
+        # For this example, let's use a fallback approach to avoid the strict schema issues
+        try:
+            result = await game_agent.run(
+                user_input=prompt,
+                tools=["get_world_state", "get_entity_info"]
+            )
+            
+            # Handle the result
+            if isinstance(result, GameEvent):
+                print(f"Event Type: {result.event_type}")
+                print(f"Message: {result.message}")
                 print(f"Reasoning: {result.reasoning}")
-            if result.target:
                 print(f"Target: {result.target}")
-            print(f"Confidence: {result.confidence}")
-            if result.metadata:
+                print(f"Confidence: {result.confidence}")
                 print(f"Metadata: {result.metadata}")
-        else:
-            print(f"Response: {result}")
+            else:
+                print(f"Response: {result}")
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            print("Falling back to non-structured output...")
+            
+            # Try again without structured output
+            try:
+                fallback_agent = agentique.create_agent(
+                    agent_id=f"game_character_fallback_{prompt[:10]}",
+                    system_prompt=(
+                        "You are an intelligent game character in a fantasy world. "
+                        "You make decisions based on the game state and player's instructions. "
+                        "Respond as the character would, describing your actions and observations."
+                    )
+                )
+                
+                result = await fallback_agent.run(
+                    user_input=prompt,
+                    tools=["get_world_state", "get_entity_info"]
+                )
+                
+                print(f"Response: {result}")
+            except Exception as fallback_error:
+                print(f"Fallback also failed: {str(fallback_error)}")
 
 if __name__ == "__main__":
     asyncio.run(main())
