@@ -107,21 +107,36 @@ class Agentique:
         Returns:
             The new Agent instance
         """
-        # Add structured output instruction to system prompt
-        structured_output_instruction = (
-            "IMPORTANT: When asked to provide a structured or specific format output, "
-            "use the structure_output function instead of writing it directly."
-        )
-        
-        full_system_prompt = system_prompt or self.default_config.system_prompt or ""
-        if full_system_prompt:
-            full_system_prompt = f"{full_system_prompt}\n\n{structured_output_instruction}"
-        else:
-            full_system_prompt = structured_output_instruction
-        
         # Use configured provider/model or defaults
         provider = provider or self.default_config.provider
         model = model or self.default_config.model
+        
+        # Structured output instructions based on provider
+        structured_output_instruction = ""
+        
+        if structured_output_model:
+            if provider.lower() == "openai":
+                # For OpenAI, we use the response_format parameter directly
+                # so no special prompt instruction is needed for newer models
+                if not any(x in model for x in ["gpt-4o", "gpt-4.5", "o1-", "o3-"]):
+                    # For older models, add instruction to return JSON
+                    schema = structured_output_model.model_json_schema()
+                    structured_output_instruction = (
+                        "\n\nWhen providing a final answer, format your response as a valid JSON object "
+                        f"following this structure: {schema}"
+                    )
+            else:
+                # For Anthropic, we need to instruct it to output JSON
+                schema = structured_output_model.model_json_schema()
+                structured_output_instruction = (
+                    "\n\nWhen providing a final answer, format your response as a valid JSON object "
+                    f"following this structure: {schema}"
+                )
+        
+        # Create full system prompt
+        full_system_prompt = system_prompt or self.default_config.system_prompt or ""
+        if structured_output_instruction:
+            full_system_prompt = f"{full_system_prompt}\n\n{structured_output_instruction}"
         
         # Create configuration
         config = AgentConfig(
@@ -130,7 +145,8 @@ class Agentique:
             model=model,
             provider=provider,
             temperature=self.default_config.temperature,
-            max_history=max_history_messages
+            max_history=max_history_messages,
+            structured_output=structured_output_model is not None
         )
         
         # Create API client based on provider
@@ -193,14 +209,6 @@ class Agentique:
     
     def _register_common_tools(self) -> None:
         """Register common built-in tools."""
-        # Register structure_output tool
-        self.register_tool(
-            name="structure_output",
-            function=self._structure_output_fn,
-            description="Provide a structured output to complete the current task. Use this function to provide your final response in a structured format.",
-            parameter_model=StructuredResult
-        )
-        
         # Register message_agent tool
         self.register_tool(
             name="message_agent",
@@ -208,7 +216,7 @@ class Agentique:
             description="Send a message to another agent and get a response.",
             parameter_model=MessageAgentParameters
         )
-    
+        
     def _structure_output_fn(self, **kwargs) -> Dict[str, Any]:
         """
         Built-in structured output function.

@@ -9,11 +9,14 @@ Design Patterns:
 - Retry Pattern: Implements retry logic for handling transient errors
 """
 
-from typing import Dict, List, Any, Optional, Union
+import copy
+from typing import Dict, List, Any, Optional, Union, Type
 import logging
 import asyncio
 import time
 from abc import ABC, abstractmethod
+import json
+from pydantic import BaseModel
 
 # Import OpenAI client
 from openai import AsyncClient as OpenAIAsyncClient
@@ -47,7 +50,8 @@ class BaseClientWrapper(ABC):
         tool_choice: Optional[Any] = "auto",
         temperature: float = 0.7,
         max_retries: int = 3,
-        retry_base_delay: float = 1.0
+        retry_base_delay: float = 1.0,
+        response_format: Optional[Dict[str, Any]] = None
     ) -> Any:
         """
         Send a chat completion request to the API.
@@ -59,9 +63,34 @@ class BaseClientWrapper(ABC):
             temperature: Sampling temperature
             max_retries: Maximum number of retries on transient errors
             retry_base_delay: Base delay for exponential backoff (in seconds)
+            response_format: Optional format specification for the response
             
         Returns:
             API response with chat completion
+        """
+        pass
+    
+    @abstractmethod
+    async def parse_structured_output(
+        self,
+        messages: List[Dict[str, Any]],
+        output_class: Type[BaseModel],
+        temperature: float = 0.7,
+        max_retries: int = 3,
+        retry_base_delay: float = 1.0
+    ) -> Any:
+        """
+        Send a request to parse structured output according to a Pydantic model.
+        
+        Args:
+            messages: List of conversation messages
+            output_class: Pydantic model class to parse the output as
+            temperature: Sampling temperature
+            max_retries: Maximum number of retries on transient errors
+            retry_base_delay: Base delay for exponential backoff (in seconds)
+            
+        Returns:
+            Parsed structured output
         """
         pass
 
@@ -92,7 +121,8 @@ class OpenAIClientWrapper(BaseClientWrapper):
         tool_choice: Optional[Any] = "auto",
         temperature: float = 0.7,
         max_retries: int = 3,
-        retry_base_delay: float = 1.0
+        retry_base_delay: float = 1.0,
+        response_format: Optional[Dict[str, Any]] = None
     ) -> ChatCompletion:
         """
         Async wrapper for OpenAI chat completions API with robust error handling.
@@ -104,6 +134,7 @@ class OpenAIClientWrapper(BaseClientWrapper):
             temperature: Sampling temperature
             max_retries: Maximum number of retries on transient errors
             retry_base_delay: Base delay for exponential backoff (in seconds)
+            response_format: Optional format specification for structured response
             
         Returns:
             OpenAI API response (ChatCompletion object)
@@ -133,6 +164,10 @@ class OpenAIClientWrapper(BaseClientWrapper):
                     
                     if tool_choice:
                         params["tool_choice"] = tool_choice
+                
+                # Add response_format if provided
+                if response_format:
+                    params["response_format"] = response_format
                 
                 # Log the request (excluding message content for brevity)
                 logger.debug(f"Calling OpenAI API with model={self.model}, "
@@ -178,6 +213,123 @@ class OpenAIClientWrapper(BaseClientWrapper):
         
         # If we get here, we've exhausted retries
         raise last_exception or RuntimeError("Failed to get response from OpenAI API")
+    
+    async def parse_structured_output(
+        self,
+        messages: List[Dict[str, Any]],
+        output_class: Type[BaseModel],
+        temperature: float = 0.7,
+        max_retries: int = 3,
+        retry_base_delay: float = 1.0
+    ) -> Any:
+        """
+        Use OpenAI's structured output parsing functionality.
+        
+        This method utilizes OpenAI's Pydantic integration to parse outputs
+        directly into a specified Pydantic model.
+        
+        Args:
+            messages: List of conversation messages
+            output_class: Pydantic model class to parse the output as
+            temperature: Sampling temperature
+            max_retries: Maximum number of retries on transient errors
+            retry_base_delay: Base delay for exponential backoff (in seconds)
+            
+        Returns:
+            Parsed structured output as an instance of output_class
+            
+        Raises:
+            Exception: If API call fails after all retries
+        """
+        # Get the raw schema from Pydantic
+        schema = output_class.model_json_schema()
+        
+        # Process the schema for OpenAI compatibility
+        processed_schema = copy.deepcopy(schema)
+        
+        # Set additionalProperties: false at root level
+        processed_schema["additionalProperties"] = False
+        
+        # Process $defs section if present (for enums and nested types)
+        if "$defs" in processed_schema:
+            for def_name, def_schema in processed_schema["$defs"].items():
+                if def_schema.get("type") == "object":
+                    # Set additionalProperties for each object in $defs
+                    def_schema["additionalProperties"] = False
+                    
+                    # Make sure all properties are required
+                    if "properties" in def_schema:
+                        def_schema["required"] = list(def_schema["properties"].keys())
+        
+        # Handle properties and references
+        if "properties" in processed_schema:
+            for prop_name, prop_schema in processed_schema["properties"].items():
+                # If this property uses $ref, remove any extra fields that are not allowed
+                if isinstance(prop_schema, dict) and "$ref" in prop_schema:
+                    # OpenAI doesn't allow other fields alongside $ref
+                    # Keep only the $ref field
+                    ref_value = prop_schema["$ref"]
+                    processed_schema["properties"][prop_name] = {"$ref": ref_value}
+                # If this is an inline object, ensure it has additionalProperties: false
+                elif isinstance(prop_schema, dict) and prop_schema.get("type") == "object":
+                    prop_schema["additionalProperties"] = False
+                    
+                    # Set required fields for the nested object
+                    if "properties" in prop_schema:
+                        prop_schema["required"] = list(prop_schema["properties"].keys())
+                        
+            # Make sure all top-level properties are required
+            processed_schema["required"] = list(processed_schema["properties"].keys())
+        
+        # Log the schema for debugging
+        schema_name = output_class.__name__.lower()
+        logger.debug(f"Sending processed schema for {schema_name}: {json.dumps(processed_schema, indent=2)}")
+        
+        # Set up response format for structured output
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": processed_schema
+            }
+        }
+        
+        try:
+            # Call the API with structured output format
+            response = await self.chat_completions(
+                messages=messages,
+                temperature=temperature,
+                max_retries=max_retries,
+                retry_base_delay=retry_base_delay,
+                response_format=response_format
+            )
+            
+            # Extract content from response
+            content = response.choices[0].message.content
+            
+            # Check for refusal
+            if hasattr(response.choices[0].message, 'refusal') and response.choices[0].message.refusal:
+                return {"refusal": response.choices[0].message.refusal}
+            
+            # Parse JSON into the Pydantic model
+            if content:
+                try:
+                    data = json.loads(content)
+                    logger.debug(f"Received JSON data: {json.dumps(data, indent=2)}")
+                    return output_class.model_validate(data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding JSON from response: {e}")
+                    raise ValueError(f"Response could not be parsed as JSON: {content[:100]}...")
+                except Exception as e:
+                    logger.error(f"Error parsing response into {output_class.__name__}: {e}")
+                    raise
+            else:
+                raise ValueError("Empty response content received")
+        except Exception as e:
+            logger.error(f"Error during structured output parsing: {str(e)}")
+            # Re-raise the exception for handling by the caller
+            raise
     
     def _is_retryable_error(self, error) -> bool:
         """
@@ -249,7 +401,8 @@ class AnthropicClientWrapper(BaseClientWrapper):
         tool_choice: Optional[Any] = "auto",
         temperature: float = 0.7,
         max_retries: int = 3,
-        retry_base_delay: float = 1.0
+        retry_base_delay: float = 1.0,
+        response_format: Optional[Dict[str, Any]] = None
     ) -> Message:
         """
         Async wrapper for Anthropic chat completions API with robust error handling.
@@ -261,6 +414,7 @@ class AnthropicClientWrapper(BaseClientWrapper):
             temperature: Sampling temperature
             max_retries: Maximum number of retries on transient errors
             retry_base_delay: Base delay for exponential backoff (in seconds)
+            response_format: Optional format for structured response (handled differently for Anthropic)
             
         Returns:
             Anthropic API response (Message object)
@@ -273,6 +427,31 @@ class AnthropicClientWrapper(BaseClientWrapper):
         
         # Convert OpenAI format messages to Anthropic format
         anthropic_messages = self._convert_to_anthropic_format(messages)
+        
+        # For Anthropic, if structured output is requested, we need to add instructions
+        if response_format and response_format.get("type") == "json_schema":
+            # Add instruction to generate JSON according to schema
+            schema_str = json.dumps(response_format["json_schema"]["schema"], indent=2)
+            # For the first system message, append the schema instruction
+            for i, msg in enumerate(anthropic_messages):
+                if msg["role"] == "system":
+                    anthropic_messages[i]["content"] = (
+                        f"{msg['content']}\n\n"
+                        f"IMPORTANT: Your response MUST be valid JSON that conforms to this schema:\n"
+                        f"```json\n{schema_str}\n```\n"
+                        f"Ensure that all fields in the schema are included, and no additional fields are added."
+                    )
+                    break
+            else:
+                # If no system message, add one
+                anthropic_messages.insert(0, {
+                    "role": "system",
+                    "content": (
+                        f"IMPORTANT: Your response MUST be valid JSON that conforms to this schema:\n"
+                        f"```json\n{schema_str}\n```\n"
+                        f"Ensure that all fields in the schema are included, and no additional fields are added."
+                    )
+                })
         
         while retry_count <= max_retries:
             try:
@@ -336,6 +515,78 @@ class AnthropicClientWrapper(BaseClientWrapper):
         
         # If we get here, we've exhausted retries
         raise last_exception or RuntimeError("Failed to get response from Anthropic API")
+    
+    async def parse_structured_output(
+        self,
+        messages: List[Dict[str, Any]],
+        output_class: Type[BaseModel],
+        temperature: float = 0.7,
+        max_retries: int = 3,
+        retry_base_delay: float = 1.0
+    ) -> Any:
+        """
+        Parse structured output for Anthropic models.
+        
+        Unlike OpenAI, Anthropic doesn't have native Pydantic integration,
+        so we need to implement this ourselves by adding schema instructions
+        and parsing the output.
+        
+        Args:
+            messages: List of conversation messages
+            output_class: Pydantic model class to parse the output as
+            temperature: Sampling temperature
+            max_retries: Maximum number of retries on transient errors
+            retry_base_delay: Base delay for exponential backoff (in seconds)
+            
+        Returns:
+            Parsed structured output as an instance of output_class
+        """
+        # Get JSON schema from the Pydantic model
+        schema = output_class.model_json_schema()
+        
+        # Create response_format equivalent for Anthropic
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": output_class.__name__.lower(),
+                "strict": True,
+                "schema": schema
+            }
+        }
+        
+        # Call the API with schema instructions
+        response = await self.chat_completions(
+            messages=messages,
+            temperature=temperature,
+            max_retries=max_retries,
+            retry_base_delay=retry_base_delay,
+            response_format=response_format
+        )
+        
+        # Extract content from response
+        content = response.choices[0].message.content
+        
+        # Parse JSON from the response
+        if content:
+            try:
+                # Find JSON in the content (Anthropic might include extra text)
+                json_start = content.find('{')
+                json_end = content.rfind('}') + 1
+                
+                if json_start != -1 and json_end != -1:
+                    json_content = content[json_start:json_end]
+                    data = json.loads(json_content)
+                    return output_class.model_validate(data)
+                else:
+                    raise ValueError("No JSON object found in the response")
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON from response: {e}")
+                raise ValueError(f"Response could not be parsed as JSON: {content[:100]}...")
+            except Exception as e:
+                logger.error(f"Error parsing response into {output_class.__name__}: {e}")
+                raise
+        else:
+            raise ValueError("Empty response content received")
     
     def _convert_to_anthropic_format(self, openai_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

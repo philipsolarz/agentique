@@ -69,6 +69,9 @@ class ToolRegistry:
             # Try to generate from type hints
             tool_schema = self._get_or_generate_schema(function)
         
+        # Ensure the schema meets OpenAI's requirements for strict mode
+        tool_schema = self._ensure_strict_schema_compatibility(tool_schema)
+        
         # Store the tool information
         self.tools[tool_name] = {
             "function": function,
@@ -78,6 +81,39 @@ class ToolRegistry:
         }
         
         logger.info(f"Registered tool: {tool_name}")
+    
+    def _ensure_strict_schema_compatibility(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Ensure the schema is compatible with OpenAI's strict mode.
+        
+        Args:
+            schema: The original schema
+            
+        Returns:
+            Modified schema compatible with strict mode
+        """
+        if not schema:
+            # If no schema, create a minimal one
+            schema = {"type": "object", "properties": {}}
+            
+        # Make sure schema has a type
+        if "type" not in schema:
+            schema["type"] = "object"
+            
+        # Make sure properties exist
+        if "properties" not in schema:
+            schema["properties"] = {}
+            
+        # Make sure additionalProperties is false
+        schema["additionalProperties"] = False
+        
+        # Make sure all properties are required
+        if "properties" in schema and schema["properties"]:
+            schema["required"] = list(schema["properties"].keys())
+        else:
+            schema["required"] = []
+            
+        return schema
     
     def _get_or_generate_schema(self, function: Callable) -> Dict[str, Any]:
         """
@@ -130,13 +166,14 @@ class ToolRegistry:
             
             tool_info = self.tools[name]
             
-            # Create OpenAI-compatible tool definition
+            # Create OpenAI-compatible tool definition with strict mode
             tool_def = {
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": tool_info["description"],
-                    "parameters": tool_info["parameters_schema"]
+                    "parameters": tool_info["parameters_schema"],
+                    "strict": True
                 }
             }
             
@@ -237,18 +274,17 @@ class ToolRegistry:
             
             properties[param_name] = prop_def
             
-            # Add to required list if no default value
-            if param.default is inspect.Parameter.empty:
-                required.append(param_name)
+            # For OpenAI strict mode, every parameter must be required
+            # Default values will be handled in the function itself
+            required.append(param_name)
         
         # Construct final schema
         schema = {
             "type": "object",
-            "properties": properties
+            "properties": properties,
+            "additionalProperties": False,
+            "required": list(properties.keys())  # All properties are required for OpenAI
         }
-        
-        if required:
-            schema["required"] = required
         
         return schema
     
@@ -293,7 +329,11 @@ class ToolRegistry:
                     non_none_args = [arg for arg in args if arg is not type(None)]
                     if len(non_none_args) == 1:
                         schema = self._type_to_schema(non_none_args[0])
-                        schema["nullable"] = True
+                        # For OpenAI, use type array with both types
+                        if "type" in schema:
+                            schema["type"] = [schema["type"], "null"]
+                        else:
+                            schema["type"] = ["null"]
                         return schema
                 # Regular Union
                 return {"anyOf": [self._type_to_schema(arg) for arg in args]}
