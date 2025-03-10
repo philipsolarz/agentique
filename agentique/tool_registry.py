@@ -10,14 +10,17 @@ Design Patterns:
 - Registry Pattern: Maintains a central registry of available tools
 """
 
-from typing import Dict, List, Any, Callable, Optional, Union, Type, get_type_hints
+from typing import Dict, List, Any, Callable, Optional, Union, Type
 import inspect
 import json
 import asyncio
 import logging
 import functools
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel
 
+# Import OpenAI's pydantic_function_tool helper
+from openai.lib._tools import pydantic_function_tool
+    
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +35,6 @@ class ToolRegistry:
     def __init__(self):
         """Initialize an empty tool registry."""
         self.tools: Dict[str, Dict[str, Any]] = {}
-        self._schema_cache: Dict[str, Dict[str, Any]] = {}  # Cache for generated schemas
     
     def register_tool(
         self,
@@ -58,19 +60,28 @@ class ToolRegistry:
         # Use docstring for description if not provided
         tool_description = description or inspect.getdoc(function) or f"Function {tool_name}"
         
-        # Generate parameters schema if not provided
+        # Generate parameters schema using the most appropriate method
         tool_schema = None
+        
         if parameters_schema:
+            # Direct schema has highest priority
             tool_schema = parameters_schema
         elif parameter_model:
-            # Use Pydantic model schema
-            tool_schema = parameter_model.model_json_schema()
+            # Use OpenAI's helper to generate the schema from the Pydantic model
+            schema_object = pydantic_function_tool(
+                parameter_model, 
+                name=tool_name, 
+                description=tool_description
+            )
+            # Extract the parameters schema from the tool object
+            tool_schema = schema_object["function"]["parameters"]
         else:
-            # Try to generate from type hints
-            tool_schema = self._get_or_generate_schema(function)
-        
-        # Ensure the schema meets OpenAI's requirements for strict mode
-        tool_schema = self._ensure_strict_schema_compatibility(tool_schema)
+            # If no schema or model provided, create a minimal schema
+            tool_schema = {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
         
         # Store the tool information
         self.tools[tool_name] = {
@@ -81,64 +92,6 @@ class ToolRegistry:
         }
         
         logger.info(f"Registered tool: {tool_name}")
-    
-    def _ensure_strict_schema_compatibility(self, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Ensure the schema is compatible with OpenAI's strict mode.
-        
-        Args:
-            schema: The original schema
-            
-        Returns:
-            Modified schema compatible with strict mode
-        """
-        if not schema:
-            # If no schema, create a minimal one
-            schema = {"type": "object", "properties": {}}
-            
-        # Make sure schema has a type
-        if "type" not in schema:
-            schema["type"] = "object"
-            
-        # Make sure properties exist
-        if "properties" not in schema:
-            schema["properties"] = {}
-            
-        # Make sure additionalProperties is false
-        schema["additionalProperties"] = False
-        
-        # Make sure all properties are required
-        if "properties" in schema and schema["properties"]:
-            schema["required"] = list(schema["properties"].keys())
-        else:
-            schema["required"] = []
-            
-        return schema
-    
-    def _get_or_generate_schema(self, function: Callable) -> Dict[str, Any]:
-        """
-        Get cached schema or generate a new one for a function.
-        
-        Args:
-            function: The function to generate a schema for
-            
-        Returns:
-            JSON schema for the function parameters
-        """
-        # Use function's qualified name as cache key
-        cache_key = f"{function.__module__}.{function.__qualname__}"
-        
-        # Check if schema is already in cache
-        if cache_key in self._schema_cache:
-            return self._schema_cache[cache_key]
-        
-        # Generate new schema
-        schema = self._generate_schema_from_type_hints(function)
-        
-        # Store in cache
-        self._schema_cache[cache_key] = schema
-        
-        return schema
     
     def get_tool_definitions(
         self, 
@@ -237,109 +190,6 @@ class ToolRegistry:
             error_msg = f"Error executing tool {tool_name}: {str(e)}"
             logger.error(error_msg, exc_info=True)
             raise
-    
-    def _generate_schema_from_type_hints(self, function: Callable) -> Dict[str, Any]:
-        """
-        Generate a JSON schema from function type hints.
-        
-        Args:
-            function: The function to generate a schema for
-            
-        Returns:
-            JSON schema for the function parameters
-        """
-        # Get function signature and type hints
-        sig = inspect.signature(function)
-        type_hints = get_type_hints(function)
-        
-        # Create properties for each parameter
-        properties = {}
-        required = []
-        
-        for param_name, param in sig.parameters.items():
-            # Skip self parameter for methods
-            if param_name == 'self':
-                continue
-            
-            # Get type hint for this parameter
-            param_type = type_hints.get(param_name, Any)
-            
-            # Create property definition
-            prop_def = self._type_to_schema(param_type)
-            
-            # Add description from parameter's default docstring if available
-            if param.default is not inspect.Parameter.empty:
-                if hasattr(param.default, '__doc__') and param.default.__doc__:
-                    prop_def['description'] = param.default.__doc__
-            
-            properties[param_name] = prop_def
-            
-            # For OpenAI strict mode, every parameter must be required
-            # Default values will be handled in the function itself
-            required.append(param_name)
-        
-        # Construct final schema
-        schema = {
-            "type": "object",
-            "properties": properties,
-            "additionalProperties": False,
-            "required": list(properties.keys())  # All properties are required for OpenAI
-        }
-        
-        return schema
-    
-    def _type_to_schema(self, type_hint: Any) -> Dict[str, Any]:
-        """
-        Convert a Python type hint to a JSON schema type.
-        
-        Args:
-            type_hint: Python type or type hint
-            
-        Returns:
-            Corresponding JSON schema type definition
-        """
-        # Basic type mappings
-        if type_hint is str:
-            return {"type": "string"}
-        elif type_hint is int:
-            return {"type": "integer"}
-        elif type_hint is float:
-            return {"type": "number"}
-        elif type_hint is bool:
-            return {"type": "boolean"}
-        elif type_hint is list or type_hint == List:
-            return {"type": "array", "items": {}}
-        elif type_hint is dict or type_hint == Dict:
-            return {"type": "object"}
-        elif hasattr(type_hint, '__origin__'):
-            # Handle typing generics like List[str], Dict[str, int], etc.
-            origin = type_hint.__origin__
-            args = type_hint.__args__
-            
-            if origin is list or origin is List:
-                return {
-                    "type": "array",
-                    "items": self._type_to_schema(args[0]) if args else {}
-                }
-            elif origin is dict or origin is Dict:
-                return {"type": "object"}
-            elif origin is Union:
-                # Handle Optional[T] (Union[T, None])
-                if type(None) in args:
-                    non_none_args = [arg for arg in args if arg is not type(None)]
-                    if len(non_none_args) == 1:
-                        schema = self._type_to_schema(non_none_args[0])
-                        # For OpenAI, use type array with both types
-                        if "type" in schema:
-                            schema["type"] = [schema["type"], "null"]
-                        else:
-                            schema["type"] = ["null"]
-                        return schema
-                # Regular Union
-                return {"anyOf": [self._type_to_schema(arg) for arg in args]}
-        
-        # Default to any type if we can't determine
-        return {}
     
     def _format_result(self, result: Any) -> Any:
         """
