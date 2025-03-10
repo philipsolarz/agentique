@@ -216,19 +216,3 @@ class Agentique:
             description="Send a message to another agent and get a response.",
             parameter_model=MessageAgentParameters
         )
-        
-    def _structure_output_fn(self, **kwargs) -> Dict[str, Any]:
-        """
-        Built-in structured output function.
-        
-        Args:
-            **kwargs: Fields for the StructuredResult
-            
-        Returns:
-            The structured output data
-        """
-        # Validate the structured output using our model
-        structured_result = StructuredResult(**kwargs)
-        
-        # Return the validated data
-        return structured_result.model_dump()
