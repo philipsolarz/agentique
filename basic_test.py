@@ -38,10 +38,10 @@ class JSONSchemaDefinition(BaseModel):
     class Config:
         extra = "forbid"
 
-# Must update forward references to support recursion.
+# Update forward references for recursion.
 JSONSchemaDefinition.model_rebuild()
 
-# -- Top-level parameters model is a specialized version of JSONSchemaDefinition --
+# -- Top-level parameters model (specialized version) --
 class JSONSchemaParameters(JSONSchemaDefinition):
     type: Literal["object"] = Field(
         "object",
@@ -60,11 +60,11 @@ class JSONSchemaParameters(JSONSchemaDefinition):
         description="A list of required property names."
     )
 
-# -- FunctionDefinition model remains the same --
+# -- FunctionDefinition model remains unchanged --
 class FunctionDefinition(BaseModel):
     name: str = Field(
         ...,
-        description="The name of the function (e.g. 'get_weather')."
+        description="The name of the function (e.g. 'advanced_analysis')."
     )
     description: str = Field(
         ...,
@@ -82,84 +82,168 @@ class FunctionDefinition(BaseModel):
     class Config:
         extra = "forbid"
 
-# -- Example function and its parameter models --
-def get_weather(country: str, location: "LocationParams", forecast_days: List[int]) -> str:
-    """Get current weather for a given country, location, and forecast days."""
-    return f"It's hot in {location.city}, {country} right now. Forecast for {forecast_days} days."
+# -- Advanced parameter models for testing extremes --
 
-class CountryEnum(str, Enum):
-    Sweden = "Sweden"
-    Norway = "Norway"
-    Denmark = "Denmark"
-    Finland = "Finland"
+# Enums
+class StatusEnum(str, Enum):
+    active = "active"
+    inactive = "inactive"
+    pending = "pending"
 
-class LocationParams(BaseModel):
-    city: str = Field(..., description="City name.")
-    zip_code: Optional[str] = Field(None, description="Optional postal code.")
+class LevelEnum(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
 
-    class Config:
-        extra = "forbid"
-
-class GetWeatherParams(BaseModel):
-    country: CountryEnum = Field(..., description="Country to check the weather for.")
-    location: LocationParams = Field(..., description="Location details including city and optional postal code.")
-    forecast_days: List[int] = Field(
-        ...,
-        description="List of forecast days to retrieve weather for."
+# A nested model for detailed item information.
+class Detail(BaseModel):
+    description: str = Field(..., description="Detailed description of the item.")
+    parameters: Dict[str, Union[str, int, float]] = Field(
+        ..., description="Arbitrary parameters related to the item."
     )
-
+    
     class Config:
         extra = "forbid"
 
-# -- Helper function to clean extraneous keys from the schema --
-def clean_schema(schema: Any) -> Any:
-    """
-    Recursively remove unwanted keys (like "title", "$defs", "default") and handle "anyOf".
+# An item model nested inside a list.
+class Item(BaseModel):
+    name: str = Field(..., description="Name of the item.")
+    value: Union[int, float] = Field(..., description="Numerical value for the item.")
+    flags: List[bool] = Field(..., description="List of boolean flags.")
+    detail: Detail = Field(..., description="Detailed information for the item.")
     
-    When "anyOf" is encountered, extract the types from each option and replace it with a "type"
-    key that is either a string or a list (e.g. ["string", "null"]).
+    class Config:
+        extra = "forbid"
+
+# A recursive tree node model.
+class TreeNode(BaseModel):
+    node_id: str = Field(..., description="Unique identifier for the node.")
+    children: Optional[List["TreeNode"]] = Field(
+        None, description="Optional list of child nodes."
+    )
+    
+    class Config:
+        extra = "forbid"
+
+TreeNode.model_rebuild()  # For recursion
+
+# A model for a config that can either be a string or an object.
+class ConfigObject(BaseModel):
+    mode: str = Field(..., description="Mode for configuration.")
+    options: Dict[str, Any] = Field(..., description="Additional configuration options.")
+    
+    class Config:
+        extra = "forbid"
+
+# Advanced top-level parameters.
+class AdvancedAnalysisParams(BaseModel):
+    id: str = Field(..., description="Unique identifier for the analysis.")
+    title: str = Field(..., description="Title of the analysis.")
+    status: StatusEnum = Field(..., description="Current status of the analysis.")
+    metadata: Optional[Dict[str, Union[str, int, bool]]] = Field(
+        None, description="Optional metadata."
+    )
+    tags: Optional[List[str]] = Field(None, description="List of tags for the analysis.")
+    items: List[Item] = Field(..., description="List of items to analyze.")
+    tree: Optional[List[TreeNode]] = Field(None, description="A recursive tree of nodes.")
+    config: Union[str, ConfigObject] = Field(
+        ..., description="Configuration as a simple string or a detailed object."
+    )
+    levels: List[LevelEnum] = Field(..., description="List of level indicators.")
+    
+    class Config:
+        extra = "forbid"
+
+# -- The advanced_analysis function --
+def advanced_analysis(params: AdvancedAnalysisParams) -> str:
     """
+    Performs an advanced analysis based on the provided parameters.
+    
+    This function demonstrates the extremes of our function calling schema,
+    including nested objects, arrays, unions, enums, and recursive structures.
+    """
+    return f"Analysis {params.id} with title '{params.title}' is {params.status}."
+
+# -- Updated clean_schema: remove unwanted keys and convert anyOf unions into a merged "type" --
+def clean_schema(schema: Any, memo: Optional[Dict[int, Any]] = None) -> Any:
+    """
+    Recursively remove unwanted keys ("title", "$defs", "default") and handle anyOf.
+    
+    For anyOf, we assume that the union represents a simple union (commonly a type union
+    like object vs. null or integer vs. number). We collect all types from the options.
+    If one of the options is an object (has "properties"), we merge its details.
+    Otherwise, we simply return a dictionary with a "type" key whose value is a union list.
+    
+    Memoization is used to prevent infinite recursion on cyclic structures.
+    Additionally, for any node representing an object, we force "additionalProperties": false.
+    """
+    if memo is None:
+        memo = {}
+    schema_id = id(schema)
+    if schema_id in memo:
+        return memo[schema_id]
+    
     if isinstance(schema, dict):
-        # If "anyOf" is present, process it into a "type" key.
+        # Handle "anyOf" if present.
         if "anyOf" in schema:
-            types = []
-            for option in schema["anyOf"]:
-                option_clean = clean_schema(option)
-                if "type" in option_clean:
-                    t = option_clean["type"]
+            options = [clean_schema(option, memo) for option in schema["anyOf"]]
+            union_types = []
+            for opt in options:
+                if "type" in opt:
+                    t = opt["type"]
                     if isinstance(t, list):
-                        types.extend(t)
+                        union_types.extend(t)
                     else:
-                        types.append(t)
+                        union_types.append(t)
             # Remove duplicates while preserving order.
-            seen = set()
             unique_types = []
-            for t in types:
-                if t not in seen:
-                    seen.add(t)
+            for t in union_types:
+                if t not in unique_types:
                     unique_types.append(t)
-            new_dict = {}
-            for key, value in schema.items():
-                if key in {"title", "$defs", "default", "anyOf"}:
-                    continue
-                new_dict[key] = clean_schema(value)
-            new_dict["type"] = unique_types if len(unique_types) > 1 else unique_types[0]
-            return new_dict
+            # Check if any option is an object with properties.
+            object_opts = [opt for opt in options if opt.get("type") == "object" and "properties" in opt]
+            if object_opts:
+                # Use the first object option as the basis.
+                basis = object_opts[0].copy()
+                basis["type"] = unique_types if len(unique_types) > 1 else unique_types[0]
+                # Copy over any keys from the parent (except unwanted ones).
+                for key, value in schema.items():
+                    if key in {"title", "$defs", "default", "anyOf"}:
+                        continue
+                    basis[key] = clean_schema(value, memo)
+                if basis.get("type") == "object":
+                    basis["additionalProperties"] = False
+                memo[schema_id] = basis
+                return basis
+            else:
+                new_dict = {}
+                for key, value in schema.items():
+                    if key in {"title", "$defs", "default", "anyOf"}:
+                        continue
+                    new_dict[key] = clean_schema(value, memo)
+                new_dict["type"] = unique_types if len(unique_types) > 1 else unique_types[0]
+                memo[schema_id] = new_dict
+                return new_dict
         
-        cleaned = {}
+        new_dict: Dict[str, Any] = {}
+        memo[schema_id] = new_dict
         for key, value in schema.items():
             if key in {"title", "$defs", "default"}:
                 continue
-            cleaned_value = clean_schema(value)
-            if cleaned_value is not None:
-                cleaned[key] = cleaned_value
-        return cleaned
+            new_dict[key] = clean_schema(value, memo)
+        if new_dict.get("type") == "object":
+            new_dict["additionalProperties"] = False
+        memo[schema_id] = new_dict
+        return new_dict
+
     elif isinstance(schema, list):
-        return [clean_schema(item) for item in schema if clean_schema(item) is not None]
+        new_list = [clean_schema(item, memo) for item in schema if clean_schema(item, memo) is not None]
+        memo[schema_id] = new_list
+        return new_list
     else:
         return schema
 
-# -- The transform function --
+# -- The transform function remains unchanged --
 def transform(fn: Callable, parameter_model: Type[BaseModel]) -> FunctionDefinition:
     """
     Create a FunctionDefinition based on the inner function and its parameter model.
@@ -171,26 +255,21 @@ def transform(fn: Callable, parameter_model: Type[BaseModel]) -> FunctionDefinit
     name = fn.__name__
     description = fn.__doc__ or f"Function {name}"
     
-    # Generate the schema from the parameter model.
     schema = parameter_model.model_json_schema()
     print("Original schema:", schema)
-
+    
     # Resolve JSON references with merged properties.
     schema = jsonref.replace_refs(schema, merge_props=True)
     print("Reference Replaced:", schema)
     
-    # Clean extraneous keys recursively and remove keys with None values.
     schema = clean_schema(schema)
-    
-    # Enforce strict mode: additionalProperties must be False.
     schema["additionalProperties"] = False
     
-    # Convert the cleaned schema into our JSONSchemaParameters model.
     parameters = JSONSchemaParameters.model_validate(schema)
     return FunctionDefinition(name=name, description=description, parameters=parameters, strict=True)
 
 # -- Example usage --
 if __name__ == "__main__":
-    function_definition = transform(get_weather, GetWeatherParams)
-    print("Function definition:")
+    function_definition = transform(advanced_analysis, AdvancedAnalysisParams)
+    print("Advanced Function definition:")
     print(function_definition.model_dump_json(indent=2, exclude_none=True))
