@@ -15,7 +15,7 @@ import logging
 from pydantic import BaseModel
 
 from .agent_core import Agent
-from .models import StructuredResult, AgentConfig, MessageAgentParameters
+from .models import StructuredResult, AgentConfig, MessageAgentParameters, ToolParameters
 from .tool_registry import ToolRegistry
 from .client import OpenAIClientWrapper, AnthropicClientWrapper, BaseClientWrapper
 from .agent_registry import AgentRegistry
@@ -63,8 +63,7 @@ class Agentique:
         name: str,
         function: Callable,
         description: Optional[str] = None,
-        parameters_schema: Optional[Dict[str, Any]] = None,
-        parameter_model: Optional[Type[BaseModel]] = None
+        parameter_model: Optional[Type[BaseModel]] = ToolParameters
     ) -> None:
         """
         Register a tool that can be used by agents.
@@ -80,7 +79,6 @@ class Agentique:
             name=name,
             function=function,
             description=description,
-            parameters_schema=parameters_schema,
             parameter_model=parameter_model
         )
     
@@ -111,32 +109,15 @@ class Agentique:
         provider = provider or self.default_config.provider
         model = model or self.default_config.model
         
-        # Structured output instructions based on provider
-        structured_output_instruction = ""
-        
-        if structured_output_model:
-            if provider.lower() == "openai":
-                # For OpenAI, we use the response_format parameter directly
-                # so no special prompt instruction is needed for newer models
-                if not any(x in model for x in ["gpt-4o", "gpt-4.5", "o1-", "o3-"]):
-                    # For older models, add instruction to return JSON
-                    schema = structured_output_model.model_json_schema()
-                    structured_output_instruction = (
-                        "\n\nWhen providing a final answer, format your response as a valid JSON object "
-                        f"following this structure: {schema}"
-                    )
-            else:
-                # For Anthropic, we need to instruct it to output JSON
-                schema = structured_output_model.model_json_schema()
-                structured_output_instruction = (
-                    "\n\nWhen providing a final answer, format your response as a valid JSON object "
-                    f"following this structure: {schema}"
-                )
+        # If structured output is requested with Anthropic, warn and suggest OpenAI
+        if structured_output_model and provider.lower() == "anthropic":
+            logger.warning(
+                "Structured output is not supported with Anthropic models. "
+                "Consider using an OpenAI model with structured output support."
+            )
         
         # Create full system prompt
         full_system_prompt = system_prompt or self.default_config.system_prompt or ""
-        if structured_output_instruction:
-            full_system_prompt = f"{full_system_prompt}\n\n{structured_output_instruction}"
         
         # Create configuration
         config = AgentConfig(

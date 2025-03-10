@@ -20,6 +20,8 @@ from pydantic import BaseModel
 
 # Import OpenAI's pydantic_function_tool helper
 from openai.lib._tools import pydantic_function_tool
+
+from agentique.models import StructuredResult, ToolParameters
     
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,7 @@ class ToolRegistry:
         name: str,
         function: Callable,
         description: Optional[str] = None,
-        parameters_schema: Optional[Dict[str, Any]] = None,
-        parameter_model: Optional[Type[BaseModel]] = None
+        parameter_model: Optional[Type[BaseModel]] = ToolParameters
     ) -> None:
         """
         Register a new tool with metadata.
@@ -60,28 +61,13 @@ class ToolRegistry:
         # Use docstring for description if not provided
         tool_description = description or inspect.getdoc(function) or f"Function {tool_name}"
         
-        # Generate parameters schema using the most appropriate method
-        tool_schema = None
-        
-        if parameters_schema:
-            # Direct schema has highest priority
-            tool_schema = parameters_schema
-        elif parameter_model:
-            # Use OpenAI's helper to generate the schema from the Pydantic model
-            schema_object = pydantic_function_tool(
-                parameter_model, 
-                name=tool_name, 
-                description=tool_description
-            )
-            # Extract the parameters schema from the tool object
-            tool_schema = schema_object["function"]["parameters"]
-        else:
-            # If no schema or model provided, create a minimal schema
-            tool_schema = {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
+        schema_object = pydantic_function_tool(
+            parameter_model, 
+            name=tool_name, 
+            description=tool_description
+        )
+        # Extract the parameters schema from the tool object
+        tool_schema = schema_object["function"]["parameters"]
         
         # Store the tool information
         self.tools[tool_name] = {
