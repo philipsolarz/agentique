@@ -421,16 +421,16 @@ class Agent:
                 self.message_history.insert(0, system_msg)
         
         try:
-            # If using OpenAI and structured output is desired, use response_format
-            response_format = None
-            use_native_structured_output = False
+            # Check if we can use structured outputs
+            # Only supported on OpenAI models that support it
+            use_structured_output = False
             is_openai = hasattr(self.client, 'model') and 'gpt' in self.client.model.lower()
             
             if self.structured_output_model and is_openai:
                 # Check if the model supports structured outputs (gpt-4o and later)
-                if 'gpt-4o' in self.client.model or 'gpt-4.5' in self.client.model or 'o1-' in self.client.model or 'o3-' in self.client.model:
-                    response_format = self.structured_output_model.get_response_format()
-                    use_native_structured_output = True
+                if any(model_prefix in self.client.model for model_prefix in 
+                    ['gpt-4o', 'gpt-4.5', 'o1-', 'o3-']):
+                    use_structured_output = True
             
             # Get available tool definitions
             available_tools = []
@@ -443,7 +443,8 @@ class Agent:
                         tool["function"]["strict"] = True
             
             # For structured output with OpenAI's supported models, use parse method
-            if use_native_structured_output and not available_tools:
+            # Can't use this approach if tools are being used 
+            if use_structured_output and not available_tools:
                 try:
                     messages = self.get_messages()
                     result = await self.client.parse_structured_output(
@@ -452,35 +453,28 @@ class Agent:
                         temperature=temperature
                     )
                     
-                    # Check for refusal
-                    if isinstance(result, dict) and "refusal" in result:
-                        # Create assistant message with the refusal
-                        self.add_message("assistant", content=result["refusal"])
-                        return result["refusal"]
-                    
-                    # Add the assistant's structured output to history as a text message
-                    if hasattr(result, "model_dump"):
-                        content = json.dumps(result.model_dump(), indent=2)
-                    else:
-                        content = str(result)
-                    
+                    # Add the result to history as a text message for context
+                    content = json.dumps(result.model_dump(), indent=2) if hasattr(result, "model_dump") else str(result)
                     self.add_message("assistant", content=content)
+                    
                     return result
+                except NotImplementedError:
+                    logger.info("Structured output parsing not supported by this provider. Falling back to regular flow.")
+                    # Fall back to regular flow for providers that don't support structured output
                 except Exception as e:
                     logger.error(f"Error with structured output parsing: {e}. Falling back to regular flow.")
                     # Fall back to the regular flow
             
-            # Start the conversation loop
+            # Start the conversation loop (regular flow without structured output)
             iteration_count = 0
             final_response = None
             
             while iteration_count < MAX_TOOL_ITERATIONS:
                 iteration_count += 1
                 
-                # Call LLM API with appropriate format
+                # Call LLM API
                 response = await self._call_api(
                     tools=available_tools,
-                    response_format=response_format,
                     temperature=temperature
                 )
                 
@@ -543,7 +537,7 @@ class Agent:
                         content=assistant_message.content
                     )
                     
-                    # Check if this is structured output in JSON format
+                    # Check if this is structured output in JSON format (fallback for non-OpenAI models)
                     content = assistant_message.content
                     if self.structured_output_model and content.strip().startswith('{') and content.strip().endswith('}'):
                         try:
