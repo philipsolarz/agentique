@@ -1,23 +1,30 @@
 """
-Example of using Agentique for game agents.
+Example of using the refactored Agentique library for game agents with rich debugging.
 
 This example demonstrates how to create custom structured output
-models for game-specific events and interactions, using the improved
-OpenAI structured output parsing support.
+models for game-specific events and interactions, with enhanced
+logging for better visibility into the agent's operations.
 """
 
 import os
 import asyncio
+import json
 from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Dict, Any, List, Optional
-from agentique import Agentique, StructuredResult, configure_logging
+from typing import List
 from dotenv import load_dotenv
+
+# Import from refactored library
+from agentique import (
+    Agent, OpenAIClient, ToolRegistry, StructuredOutput, AgentConfig,
+    configure_logging, print_json, console
+)
 
 load_dotenv()
 
-# Set up logging
-configure_logging(level="INFO")
+# Configure logging with rich output
+logger = configure_logging(level="DEBUG", show_path=True)
+console.rule("[bold green]Game Agent Example[/bold green]")
 
 # Game-specific event types
 class GameEventType(str, Enum):
@@ -44,18 +51,16 @@ class EntityInfoParams(BaseModel):
     """Parameters for the get_entity_info tool"""
     entity_name: str = Field(..., description="Name of the entity to get information about")
 
-class Test(BaseModel):
+class WorldStateParams(BaseModel):
     pass
-
-
 # Example event types as string literals for maximum compatibility
 EVENT_TYPES = ["move", "attack", "defend", "interact", "speak", "use_item", "observe", "wait", "other"]
 
-class GameEvent(StructuredResult):
+class GameEvent(StructuredOutput):
     """
     Structured format for game events.
     
-    This extends the base StructuredResult for game-specific functionality.
+    This extends the base StructuredOutput for game-specific functionality.
     """
     event_type: str = Field(..., 
         description="The type of game event (one of: move, attack, defend, interact, speak, use_item, observe, wait, other)")
@@ -70,9 +75,6 @@ class GameEvent(StructuredResult):
     # Use a properly defined nested model instead of arbitrary Dict
     metadata: GameMetadata = Field(...,
         description="Additional metadata about the event")
-
-# Game world simulation tools
-import json
 
 # Game world simulation tools
 async def get_world_state() -> str:
@@ -115,81 +117,52 @@ async def get_entity_info(entity_name: str) -> str:
     else:
         return json.dumps({"error": f"Entity '{entity_name}' not found"})
 
-
-# async def get_world_state() -> Dict[str, Any]:
-#     """Get the current state of the game world."""
-#     return {
-#         "location": "forest",
-#         "time": "day",
-#         "weather": "clear",
-#         "nearby_entities": ["wolf", "tree", "stream"],
-#         "inventory": ["sword", "health_potion", "map"]
-#     }
-
-# async def get_entity_info(entity_name: str) -> Dict[str, Any]:
-#     """Get information about a specific entity in the game world."""
-#     entities = {
-#         "wolf": {
-#             "type": "enemy",
-#             "health": 50,
-#             "damage": 10,
-#             "description": "A gray wolf with gleaming yellow eyes",
-#             "hostile": True
-#         },
-#         "tree": {
-#             "type": "object",
-#             "description": "A tall oak tree with broad branches",
-#             "interactive": True,
-#             "actions": ["climb", "search"]
-#         },
-#         "stream": {
-#             "type": "environment",
-#             "description": "A clear flowing stream of water",
-#             "interactive": True,
-#             "actions": ["drink", "cross"]
-#         }
-#     }
-    
-#     if entity_name in entities:
-#         return entities[entity_name]
-#     else:
-#         return {"error": f"Entity '{entity_name}' not found"}
-
 async def main():
+    console.rule("[bold]Game Agent Initialization[/bold]")
+    
     # Get API key from environment
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY environment variable not set")
+        console.print("[bold red]ERROR: OPENAI_API_KEY environment variable not set[/bold red]")
+        return
     
-    # Create Agentique instance
-    agentique = Agentique(openai_api_key=openai_api_key)
+    # Create OpenAI client
+    client = OpenAIClient(api_key=openai_api_key, model="gpt-4o-mini")
     
-    # Register game-specific tools with proper parameter models
-    agentique.register_tool(
+    # Create tool registry and register tools
+    tools = ToolRegistry()
+    
+    tools.register(
+        func=get_world_state,
         name="get_world_state",
-        function=get_world_state,
-        # parameter_model=Test,
+        parameter_model=WorldStateParams,
         description="Get the current state of the game world"
     )
     
-    agentique.register_tool(
+    tools.register(
+        func=get_entity_info,
         name="get_entity_info",
-        function=get_entity_info,
         parameter_model=EntityInfoParams,
         description="Get information about a specific entity in the game world"
     )
     
-    # Create a game agent with a model that supports structured outputs
-    game_agent = agentique.create_agent(
-        agent_id="game_character",
+    # Create agent configuration
+    config = AgentConfig(
+        name="game_character",
+        model="gpt-4o-mini",
         system_prompt=(
             "You are an intelligent game character in a fantasy world. "
             "You make decisions based on the game state and player's instructions. "
             "Always respond with a structured GameEvent that describes your action. "
             "Think about your options carefully before choosing your actions."
-        ),
-        model="gpt-4o-mini",  # Use a model that supports structured outputs
-        structured_output_model=GameEvent
+        )
+    )
+    
+    # Create game agent
+    game_agent = Agent(
+        config=config,
+        client=client,
+        tool_registry=tools
     )
     
     # Run the agent with player instructions
@@ -199,28 +172,35 @@ async def main():
         "Use my sword to attack the wolf"
     ]
     
-    for prompt in prompts:
-        print(f"\nPlayer: {prompt}")
+    for i, prompt in enumerate(prompts):
+        console.rule(f"[bold yellow]Interaction {i+1}[/bold yellow]")
+        console.print(f"[bold green]Player:[/bold green] {prompt}")
         
         try:
-            # The agent.run method now properly handles structured outputs
+            # Use the run method with structured output
             result = await game_agent.run(
                 user_input=prompt,
-                tools=["get_world_state", "get_entity_info"]
+                tools=["get_world_state", "get_entity_info"],
+                structured_output_model=GameEvent
             )
             
-            # Handle the result (which could be a GameEvent or string depending on whether tools were used)
-            if isinstance(result, GameEvent):
-                print(f"Event Type: {result.event_type}")
-                print(f"Message: {result.message}")
-                print(f"Reasoning: {result.reasoning}")
-                print(f"Target: {result.target}")
-                print(f"Confidence: {result.confidence}")
-                print(f"Metadata: {result.metadata.model_dump()}")
-            else:
-                print(f"Response: {result}")
+            # Display the structured output result in a nice format
+            console.print("\n[bold blue]Game Event:[/bold blue]")
+            console.print(f"[bold]Type:[/bold] {result.event_type}")
+            console.print(f"[bold]Message:[/bold] {result.message}")
+            console.print(f"[bold]Target:[/bold] {result.target}")
+            console.print(f"[bold]Confidence:[/bold] {result.confidence:.2f}")
+            console.print("[bold]Reasoning:[/bold]")
+            console.print(f"[dim italic]{result.reasoning}[/dim italic]")
+            
+            # Print metadata in a nice format
+            console.print("[bold]Metadata:[/bold]")
+            print_json(result.metadata.model_dump(), title="Event Metadata")
+            
         except Exception as e:
-            print(f"Error: {str(e)}")
+            console.print(f"[bold red]Error:[/bold red] {str(e)}", highlight=True)
+            import traceback
+            console.print_exception()
 
 if __name__ == "__main__":
     asyncio.run(main())

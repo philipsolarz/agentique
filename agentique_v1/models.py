@@ -1,13 +1,21 @@
 """
-Core data models for the Agentique library.
+Data models for the Agentique library.
 
 This module contains Pydantic models for message representation,
 configuration, and structured outputs.
+
+Design Patterns:
+- Data Transfer Object (DTO): Models represent data structures for transfer
+- Validator Pattern: Models include validation logic for their fields
 """
 
-from typing import Literal, Optional, List, Dict, Any, Type, ClassVar, Union
+from typing import Optional, List, Dict, Any, Union, Literal, Type, ClassVar, get_type_hints
+import json
+import logging
 from enum import Enum
-from pydantic import BaseModel, Field, model_validator, ConfigDict
+from pydantic import BaseModel, Field, model_validator, ConfigDict, create_model
+
+logger = logging.getLogger(__name__)
 
 # Schema for individual property definitions in the parameters schema.
 class JSONSchemaProperty(BaseModel):
@@ -105,12 +113,11 @@ class MessageRole(str, Enum):
     TOOL = "tool"
 
 
-
-class Message(BaseModel):
+class MessageModel(BaseModel):
     """
-    A message in the conversation history.
+    Represents a message in the conversation history.
     
-    Follows the OpenAI chat completions API format.
+    This model matches the OpenAI API message format for Chat Completions.
     
     Attributes:
         role: The role of the message sender (system, user, assistant, or tool)
@@ -118,8 +125,9 @@ class Message(BaseModel):
         name: Name identifier (used for tool responses)
         tool_calls: List of tool calls initiated by the assistant
         tool_call_id: ID of the tool call this message is responding to
+        refusal: If the model refuses to generate a response, this field will contain the refusal message
     """
-    role: MessageRole
+    role: str
     content: Optional[str] = None
     name: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
@@ -127,16 +135,16 @@ class Message(BaseModel):
     refusal: Optional[str] = None
     
     model_config = ConfigDict(
-        extra="allow",  # Allow extra fields for future compatibility
+        extra="allow",  # Allow extra fields for future API compatibility
         populate_by_name=True  # Allow populating by field name
     )
     
     @model_validator(mode='after')
-    def validate_message(self):
-        """Ensure the message has valid content based on its role."""
+    def validate_content_or_tool_calls(self):
+        """Ensure that assistant messages have either content, tool_calls, or refusal."""
         if self.role == MessageRole.ASSISTANT:
-            if self.content is None and not self.tool_calls:
-                raise ValueError("Assistant messages must have either content or tool_calls")
+            if self.content is None and not self.tool_calls and self.refusal is None:
+                raise ValueError("Assistant messages must have either content, tool_calls, or refusal")
         elif self.role == MessageRole.TOOL:
             if self.content is None:
                 raise ValueError("Tool messages must have content")
@@ -144,58 +152,67 @@ class Message(BaseModel):
                 raise ValueError("Tool messages must have a tool_call_id")
         return self
 
-class ToolDefinition(BaseModel):
-    """
-    Definition of a tool that can be used by an agent.
-    
-    Following OpenAI's function definition format.
-    
-    Attributes:
-        name: Name of the tool
-        description: Description of what the tool does
-        parameters: JSON Schema for the tool's parameters
-    """
-    name: str
-    description: str
-    parameters: Dict[str, Any]
 
-class StructuredOutput(BaseModel):
+class ToolParameters(BaseModel):
+    """
+    Base class for tool parameter definitions.
+    
+    This class should be extended by specific tool parameter models.
+    """
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+
+
+class StructuredResult(BaseModel):
     """
     Base model for structured outputs from agents.
     
-    This is a generic base class that can be extended to create
-    domain-specific structured output formats.
+    This is a generic base class that can be extended by users to create
+    domain-specific structured output formats. For OpenAI integration,
+    this class will be used directly with client.beta.chat.completions.parse.
     """
     model_config = ConfigDict(
-        extra="allow",  # Allow additional fields in subclasses
+        extra="allow",  # Allow additional fields defined in subclasses
     )
     
     @classmethod
-    def schema_json(cls) -> str:
-        """Get the JSON schema for this model."""
-        return cls.model_json_schema()
+    def create_from_dict(cls, data: Dict[str, Any]) -> "StructuredResult":
+        """
+        Create an instance of this class from a dictionary.
+        
+        Args:
+            data: Dictionary of data
+            
+        Returns:
+            Instance of this class
+        """
+        return cls.model_validate(data)
+
+
+class MessageAgentParameters(ToolParameters):
+    """Parameters for messaging another agent."""
+    target_agent_id: str = Field(..., description="ID of the agent to message")
+    message: str = Field(..., description="Message to send to the agent")
+    maintain_context: bool = Field(False, description="Whether to include conversation context")
 
 class AgentConfig(BaseModel):
     """
     Configuration for an agent.
     
     Attributes:
-        name: Name identifier for the agent
-        model: OpenAI model to use (must be gpt-4o-mini or newer)
-        system_prompt: Base system prompt for the agent
-        temperature: Sampling temperature for responses (0.0 to 2.0)
+        agent_id: Unique identifier for the agent
+        system_prompt: Base system prompt or persona
+        model: Model name to use (defaults to OpenAI's gpt-4o-mini)
+        provider: AI provider to use ('openai' or 'anthropic')
+        temperature: Sampling temperature for responses
         max_history: Maximum number of messages to keep in history
+        structured_output: Whether to use structured output
     """
-    name: str
-    model: str = Field(default="gpt-4o-mini")
-    system_prompt: Optional[str] = Field(default=None)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    max_history: int = Field(default=100, gt=0)
-    
-    @model_validator(mode='after')
-    def validate_model(self):
-        """Ensure the model is a supported version."""
-        supported_prefixes = ['gpt-4o', 'gpt-4-', 'gpt-4.', 'o1-']
-        if not any(self.model.startswith(prefix) for prefix in supported_prefixes):
-            raise ValueError(f"Model {self.model} is not supported. Must be GPT-4o or newer.")
-        return self
+    agent_id: str
+    system_prompt: Optional[str] = None
+    model: str = "gpt-4o-mini"
+    provider: str = "openai"  # 'openai' or 'anthropic'
+    temperature: float = 0.7
+    max_history: int = 100
+    structured_output: bool = True
