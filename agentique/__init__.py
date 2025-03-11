@@ -12,12 +12,13 @@ Key components:
 
 from .agent import Agent
 from .tools import ToolRegistry, Tool
-from .models import Message, StructuredOutput, AgentConfig, ToolDefinition
+from .models import Message, StructuredOutput, AgentConfig
 from .openai_client import OpenAIClient
 from .exceptions import AgentiqueError, ToolExecutionError, ToolNotFoundError
 from .logging import configure_logging, get_logger, print_json, print_code, print_object, console
+from .utils import generate_function_schema
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"  # Updated version
 __all__ = [
     # Core classes
     "Agent",
@@ -29,7 +30,6 @@ __all__ = [
     "Message", 
     "StructuredOutput", 
     "AgentConfig",
-    "ToolDefinition",
     
     # Exceptions
     "AgentiqueError",
@@ -43,6 +43,9 @@ __all__ = [
     "print_code",
     "print_object",
     "console",
+    
+    # Schema Utilities
+    "generate_function_schema",
 ]
 
 # Configure default logging
