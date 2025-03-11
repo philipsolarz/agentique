@@ -296,7 +296,7 @@ class Agent:
                             "type": "function",
                             "function": {
                                 "name": tc.function.name,
-                                "arguments": json.loads(tc.function.arguments)
+                                "arguments": tc.function.arguments
                             },
                             "strict": "True"
                         }
@@ -432,7 +432,7 @@ class Agent:
                             {
                                 "id": tc.id,
                                 "name": tc.function.name,
-                                "arguments": json.loads(tc.function.arguments)
+                                "arguments": tc.function.arguments
                             }
                             for tc in tool_calls
                         ]

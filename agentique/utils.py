@@ -1,50 +1,18 @@
+"""
+Schema utilities for OpenAI function calling in the Agentique library.
+
+Provides utilities to generate accurate OpenAI function schemas from 
+Python functions and their associated Pydantic parameter models.
+"""
+
 from enum import Enum
-from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Union, Literal, Optional, Callable, Type
 import jsonref
+from pydantic import BaseModel
 
-# -------------------------------
-# Schema Models for Function Calling
-# -------------------------------
+from .logging import get_logger
 
-class FunctionSchemaDefinition(BaseModel):
-    """Represents a JSON schema definition for a function parameter."""
-    type: Union[str, List[str]] = Field(..., description="The JSON schema type.")
-    description: Optional[str] = Field(None, description="A description of the schema.")
-    enum: Optional[List[Any]] = Field(None, description="Optional enumeration of valid values.")
-    additionalProperties: Optional[bool] = Field(None, description="Specifies whether additional properties are allowed.")
-    properties: Optional[Dict[str, "FunctionSchemaDefinition"]] = Field(
-        None, description="Mapping of property names to their schema definitions."
-    )
-    required: Optional[List[str]] = Field(None, description="List of required property names.")
-    items: Optional["FunctionSchemaDefinition"] = Field(None, description="Schema definition for array items.")
-    
-    class Config:
-        extra = "forbid"
-
-FunctionSchemaDefinition.model_rebuild()
-
-class FunctionSchemaParameters(FunctionSchemaDefinition):
-    """Specialized schema for function parameters (an object with properties)."""
-    type: Literal["object"] = Field("object", description="Must be 'object'.")
-    additionalProperties: bool = Field(False, description="Should be false in strict mode.")
-    properties: Dict[str, FunctionSchemaDefinition] = Field(
-        ..., description="Mapping of parameter names to their schema definitions."
-    )
-    required: List[str] = Field(..., description="List of required parameter names.")
-
-class OpenAIFunctionDefinition(BaseModel):
-    """Represents an OpenAI function definition for function calling."""
-    name: str = Field(..., description="The function's name.")
-    description: str = Field(..., description="Description of the function.")
-    parameters: FunctionSchemaParameters = Field(
-        ..., description="The JSON schema defining the function's input arguments."
-    )
-    strict: bool = Field(..., description="If true, the function call must strictly follow the schema.")
-    
-    class Config:
-        extra = "forbid"
-
+logger = get_logger("schema")
 
 # -------------------------------
 # Config / Constants
@@ -274,38 +242,38 @@ def enforce_object_constraints(schema_dict: Dict[str, Any]) -> None:
 # Public API
 # -------------------------------
 
-def generate_function_schema(fn: Callable, parameter_model: Type[BaseModel]) -> OpenAIFunctionDefinition:
+def generate_function_schema(fn: Callable, parameter_model: Type[BaseModel]) -> Dict[str, Any]:
     """
     Generate an OpenAI function schema from a function and its Pydantic parameter model.
     
-    Steps:
-      1. Extract function name and docstring.
-      2. Generate the JSON schema from the parameter model.
-      3. Resolve JSON references (merging properties).
-      4. Process the schema (removing unwanted keys, merging union types, etc.).
-      5. Validate against our FunctionSchemaParameters model.
+    Args:
+        fn: The function for which to generate a schema
+        parameter_model: Pydantic model defining the function parameters
+        
+    Returns:
+        OpenAI function definition schema
     """
     name = fn.__name__
     description = fn.__doc__ or f"Function {name}"
     
-    # 1-2. Generate the raw schema from the parameter model
+    # Generate the raw schema from the parameter model
     raw_schema = parameter_model.model_json_schema()
     
-    # 3. Merge JSON references
+    # Merge JSON references
     resolved_schema = jsonref.replace_refs(raw_schema, merge_props=True)
     
-    # 4. Process the schema
+    # Process the schema
     final_schema = process_schema(resolved_schema)
     
     # At the top level, ensure additionalProperties is false
     final_schema["additionalProperties"] = False
     
-    # 5. Validate
-    parameters = FunctionSchemaParameters.model_validate(final_schema)
+    # Create function definition
+    function_def = {
+        "name": name,
+        "description": description,
+        "parameters": final_schema
+    }
     
-    return OpenAIFunctionDefinition(
-        name=name,
-        description=description,
-        parameters=parameters,
-        strict=True
-    )
+    logger.debug(f"Generated function schema for: [bold blue]{name}[/bold blue]")
+    return function_def

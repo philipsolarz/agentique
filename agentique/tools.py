@@ -15,7 +15,7 @@ import time
 
 from pydantic import BaseModel
 
-from .models import ToolDefinition
+from .utils import generate_function_schema
 from .exceptions import ToolNotFoundError, ToolExecutionError
 from .logging import get_logger, print_json, console
 
@@ -69,9 +69,12 @@ class ToolRegistry:
         # Log the parameter model
         logger.debug(f"Using parameter model: [cyan]{parameter_model.__name__}[/cyan]")
         
-        # Get JSON schema from parameter model
-        schema = parameter_model.model_json_schema()
-
+        # Generate optimized function schema using our utility
+        function_def = generate_function_schema(func, parameter_model)
+        
+        # Extract schema
+        schema = function_def["parameters"]
+        
         # Log the parameter schema
         logger.debug(f"Parameter schema for tool [bold]{tool_name}[/bold]:")
         print_json(schema, title=f"{tool_name} Parameters")

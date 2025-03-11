@@ -9,71 +9,17 @@ from typing import Literal, Optional, List, Dict, Any, Type, ClassVar, Union
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator, ConfigDict
 
-# Schema for individual property definitions in the parameters schema.
-class JSONSchemaProperty(BaseModel):
-    type: Union[str, List[str]] = Field(
-        ...,
-        description="The property type, e.g. 'string' or ['string', 'null'] for optional fields."
-    )
-    description: Optional[str] = Field(
-        None,
-        description="A description of the property."
-    )
-    enum: Optional[List[Any]] = Field(
-        None,
-        description="Optional enumeration of valid values for this property."
-    )
+class MessageRole(str, Enum):
+    """Enumeration of valid message roles."""
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
 
-# Schema for the JSON parameters which must be an object with defined properties.
-class JSONSchemaParameters(BaseModel):
-    type: Literal["object"] = Field(
-        "object",
-        const=True,
-        description="Must be the string 'object'."
-    )
-    properties: Dict[str, JSONSchemaProperty] = Field(
-        ...,
-        description="A mapping of property names to their schema definitions."
-    )
-    required: List[str] = Field(
-        ...,
-        description="A list of required property names."
-    )
-    additionalProperties: bool = Field(
-        ...,
-        description="Indicates whether additional properties are allowed (should be False in strict mode)."
-    )
-
-# Schema representing a function's definition.
-class FunctionDefinition(BaseModel):
-    name: str = Field(
-        ...,
-        description="The name of the function (e.g. 'get_weather')."
-    )
-    description: str = Field(
-        ...,
-        description="A detailed description of when and how to use the function."
-    )
-    parameters: JSONSchemaParameters = Field(
-        ...,
-        description="The JSON schema defining the input arguments for the function."
-    )
-    strict: bool = Field(
-        ...,
-        description="If true, enforces that function calls adhere strictly to the schema."
-    )
-
-# Top-level schema for a tool function as used in function calling.
-class ToolFunction(BaseModel):
-    type: Literal["function"] = Field(
-        "function",
-        const=True,
-        description="Must be the string 'function'."
-    )
-    function: FunctionDefinition
-
-# Schema for a function call's function field in the response.
 class ToolCallFunction(BaseModel):
+    """
+    Schema for a function call's function field in the API response.
+    """
     name: str = Field(
         ...,
         description="The name of the function being called."
@@ -83,28 +29,19 @@ class ToolCallFunction(BaseModel):
         description="A JSON-encoded string of the function call arguments."
     )
 
-# Schema for a function call response.
 class ToolCall(BaseModel):
+    """
+    Schema for a function call in the API response.
+    """
     id: str = Field(
         ...,
         description="A unique identifier for the function call."
     )
     type: Literal["function"] = Field(
         "function",
-        const=True,
         description="The type of tool call (always 'function')."
     )
     function: ToolCallFunction
-
-
-class MessageRole(str, Enum):
-    """Enumeration of valid message roles."""
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-    TOOL = "tool"
-
-
 
 class Message(BaseModel):
     """
@@ -122,7 +59,7 @@ class Message(BaseModel):
     role: MessageRole
     content: Optional[str] = None
     name: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
     refusal: Optional[str] = None
     
@@ -143,21 +80,6 @@ class Message(BaseModel):
             if not self.tool_call_id:
                 raise ValueError("Tool messages must have a tool_call_id")
         return self
-
-class ToolDefinition(BaseModel):
-    """
-    Definition of a tool that can be used by an agent.
-    
-    Following OpenAI's function definition format.
-    
-    Attributes:
-        name: Name of the tool
-        description: Description of what the tool does
-        parameters: JSON Schema for the tool's parameters
-    """
-    name: str
-    description: str
-    parameters: Dict[str, Any]
 
 class StructuredOutput(BaseModel):
     """
