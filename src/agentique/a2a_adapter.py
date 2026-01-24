@@ -1,110 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+try:
+    from a2a.client import A2AClient, ClientFactory, ClientConfig
+    from a2a.client.helpers import create_text_message_object
+    from a2a.utils.message import get_message_text
+    from a2a.utils.artifact import get_artifact_text
+    from a2a.types import (
+        MessageSendParams,
+        SendMessageRequest,
+        MessageSendConfiguration,
+        SendStreamingMessageRequest,
+    )
+except ImportError as exc:
+    raise RuntimeError(
+        "A2A SDK not installed or missing required components. "
+        "Install a compatible version of 'a2a-sdk'."
+    ) from exc
+
 import inspect
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from .models import AgentEvent, AgentResponse, McpContextSnapshot, StreamChunk
-
-
-@dataclass(frozen=True)
-class A2AImports:
-    A2AClient: type | None
-    ClientFactory: type | None
-    ClientConfig: type | None
-    create_text_message_object: Callable[..., Any] | None
-    get_message_text: Callable[[Any], str] | None
-    get_artifact_text: Callable[[Any], str] | None
-    MessageSendParams: type | None
-    MessageSendConfiguration: type | None
-    SendMessageRequest: type | None
-    SendStreamingMessageRequest: type | None
-
-
-def _load_a2a_imports() -> A2AImports:
-    try:
-        import a2a  # noqa: F401
-    except Exception as exc:  # pragma: no cover - import guard
-        raise RuntimeError(
-            "A2A SDK not installed. Install the A2A Python SDK to enable the bridge."
-        ) from exc
-
-    A2AClient = None
-    ClientFactory = None
-    ClientConfig = None
-    create_text_message_object: Callable[..., Any] | None = None
-    get_message_text: Callable[[Any], str] | None = None
-    get_artifact_text: Callable[[Any], str] | None = None
-    MessageSendParams = None
-    MessageSendConfiguration = None
-    SendMessageRequest = None
-    SendStreamingMessageRequest = None
-
-    try:
-        from a2a.client import A2AClient
-    except Exception:
-        A2AClient = None
-
-    try:
-        from a2a.client import ClientFactory, ClientConfig
-    except Exception:
-        ClientFactory = None
-        ClientConfig = None
-
-    try:
-        from a2a.client.helpers import create_text_message_object
-    except Exception:
-        create_text_message_object = None
-
-    try:
-        from a2a.utils.message import get_message_text
-    except Exception:
-        get_message_text = None
-
-    try:
-        from a2a.utils.artifact import get_artifact_text
-    except Exception:
-        get_artifact_text = None
-
-    try:
-        from a2a.types import MessageSendParams, SendMessageRequest
-    except Exception:
-        MessageSendParams = None
-        SendMessageRequest = None
-
-    try:
-        from a2a.types import MessageSendConfiguration
-    except Exception:
-        MessageSendConfiguration = None
-
-    try:
-        from a2a.types import SendStreamingMessageRequest
-    except Exception:
-        SendStreamingMessageRequest = None
-
-    return A2AImports(
-        A2AClient=A2AClient,
-        ClientFactory=ClientFactory,
-        ClientConfig=ClientConfig,
-        create_text_message_object=create_text_message_object,
-        get_message_text=get_message_text,
-        get_artifact_text=get_artifact_text,
-        MessageSendParams=MessageSendParams,
-        MessageSendConfiguration=MessageSendConfiguration,
-        SendMessageRequest=SendMessageRequest,
-        SendStreamingMessageRequest=SendStreamingMessageRequest,
-    )
-
-
-_A2A_IMPORTS: A2AImports | None = None
-
-
-def _a2a() -> A2AImports:
-    global _A2A_IMPORTS
-    if _A2A_IMPORTS is None:
-        _A2A_IMPORTS = _load_a2a_imports()
-    return _A2A_IMPORTS
 
 
 def _is_async_iterator(value: Any) -> bool:
@@ -134,21 +51,20 @@ class A2AClientFactory:
         if base_url in self._clients:
             return self._clients[base_url]
 
-        imports = _a2a()
         client: Any | None = None
 
-        if not self._prefer_legacy and imports.ClientFactory is not None:
+        if not self._prefer_legacy:
             config = self._client_config
-            if config is None and imports.ClientConfig is not None:
-                config = imports.ClientConfig()
-            client = await imports.ClientFactory.connect(
+            if config is None:
+                config = ClientConfig()
+            client = await ClientFactory.connect(
                 base_url,
                 client_config=config,
                 resolver_http_kwargs=self._resolver_http_kwargs,
                 relative_card_path=self._card_path,
             )
-        elif imports.A2AClient is not None:
-            client = imports.A2AClient(base_url, **self._client_kwargs)
+        else:
+            client = A2AClient(base_url, **self._client_kwargs)
 
         if client is None:
             raise RuntimeError("Unable to construct an A2A client with the installed SDK.")
@@ -175,13 +91,9 @@ class A2ATranslator:
         context: McpContextSnapshot | None,
         extra: dict[str, Any] | None,
     ) -> tuple[Any, dict[str, Any]]:
-        imports = _a2a()
-        if imports.create_text_message_object is None:
-            raise RuntimeError("A2A SDK missing create_text_message_object helper.")
-
         # create_text_message_object(role=Role.user, content='')
         # Pass text as content parameter (second positional arg)
-        message = imports.create_text_message_object(content=text)
+        message = create_text_message_object(content=text)
         metadata: dict[str, Any] = {}
         if context:
             metadata["mcp"] = context.to_metadata()
@@ -200,16 +112,13 @@ class A2ATranslator:
         metadata: dict[str, Any] | None,
         configuration: Any | None,
     ) -> Any:
-        imports = _a2a()
-        if imports.MessageSendParams is None or imports.SendMessageRequest is None:
-            raise RuntimeError("A2A SDK missing legacy request types.")
-        payload = imports.MessageSendParams(
+        payload = MessageSendParams(
             message=message,
             metadata=metadata,
             configuration=self._coerce_configuration(configuration),
         )
         request_id = str(uuid4())
-        return imports.SendMessageRequest(id=request_id, params=payload)
+        return SendMessageRequest(id=request_id, params=payload)
 
     def build_streaming_request(
         self,
@@ -218,16 +127,13 @@ class A2ATranslator:
         metadata: dict[str, Any] | None,
         configuration: Any | None,
     ) -> Any:
-        imports = _a2a()
-        if imports.SendStreamingMessageRequest is None:
-            raise RuntimeError("Streaming request type unavailable in A2A SDK.")
-        payload = imports.MessageSendParams(
+        payload = MessageSendParams(
             message=message,
             metadata=metadata,
             configuration=self._coerce_configuration(configuration),
         )
         request_id = str(uuid4())
-        return imports.SendStreamingMessageRequest(id=request_id, params=payload)
+        return SendStreamingMessageRequest(id=request_id, params=payload)
 
     def iter_events(self, iterator: AsyncIterator[Any]) -> AsyncIterator[AgentEvent]:
         async def _iter() -> AsyncIterator[AgentEvent]:
@@ -273,21 +179,17 @@ class A2ATranslator:
         return event
 
     def _message_text(self, message: Any) -> str | None:
-        imports = _a2a()
-        if imports.get_message_text is not None:
-            try:
-                return imports.get_message_text(message)
-            except Exception:
-                pass
+        try:
+            return get_message_text(message)
+        except Exception:
+            pass
         return self._extract_text_from_parts(getattr(message, "parts", None))
 
     def _artifact_text(self, artifact: Any) -> str | None:
-        imports = _a2a()
-        if imports.get_artifact_text is not None:
-            try:
-                return imports.get_artifact_text(artifact)
-            except Exception:
-                pass
+        try:
+            return get_artifact_text(artifact)
+        except Exception:
+            pass
         return self._extract_text_from_parts(getattr(artifact, "parts", None))
 
     def _extract_text_from_parts(self, parts: Any) -> str | None:
@@ -326,10 +228,9 @@ class A2ATranslator:
     def _coerce_configuration(self, configuration: Any | None) -> Any | None:
         if configuration is None:
             return None
-        imports = _a2a()
-        if imports.MessageSendConfiguration is not None and isinstance(configuration, dict):
+        if isinstance(configuration, dict):
             try:
-                return imports.MessageSendConfiguration(**configuration)
+                return MessageSendConfiguration(**configuration)
             except Exception:
                 return configuration
         return configuration
