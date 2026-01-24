@@ -73,7 +73,7 @@ def create_a2a_app(agent: AdkEchoAgent, base_url: str) -> tuple[Any, AdkRequestH
         card.capabilities.streaming = True
 
     handler = AdkRequestHandler(agent)
-    app = A2AFastAPIApplication(agent_card=card, request_handler=handler)
+    app = A2AFastAPIApplication(agent_card=card, http_handler=handler)
     return app.build(), handler
 
 

@@ -56,7 +56,11 @@ class A2AClientFactory:
         if not self._prefer_legacy:
             config = self._client_config
             if config is None:
-                config = ClientConfig()
+                # Create default config with extended timeout for multi-turn agent operations
+                # Default httpx timeout is 5s, but agents with function calling need more time
+                import httpx
+                httpx_client = httpx.AsyncClient(timeout=60.0)  # 60 seconds for agent operations
+                config = ClientConfig(httpx_client=httpx_client)
             client = await ClientFactory.connect(
                 base_url,
                 client_config=config,
@@ -144,7 +148,16 @@ class A2ATranslator:
 
     def to_event(self, event: Any) -> AgentEvent:
         kind, text = self._event_to_text(event)
-        return AgentEvent(kind=kind, text=text, raw=event)
+        task_id, progress, artifact_id, event_metadata = self._extract_event_metadata(event)
+        return AgentEvent(
+            kind=kind,
+            text=text,
+            raw=event,
+            task_id=task_id,
+            progress=progress,
+            artifact_id=artifact_id,
+            event_metadata=event_metadata,
+        )
 
     def reduce_events(self, events: list[AgentEvent]) -> str:
         text_parts = [event.text for event in events if event.text]
@@ -158,6 +171,21 @@ class A2ATranslator:
         if isinstance(event, tuple) and len(event) == 2:
             task, update = event
             if update is None:
+                # Check if the task itself has a message/result
+                # This happens with completed tasks from ADK's to_a2a wrapper
+                task_message = getattr(task, "message", None)
+                if task_message is not None:
+                    text = self._message_text(task_message)
+                    if text:
+                        return "message", text
+                # Check for result field on task
+                task_result = getattr(task, "result", None)
+                if task_result is not None:
+                    if hasattr(task_result, "parts"):
+                        text = self._message_text(task_result)
+                        if text:
+                            return "message", text
+                # Fall back to task summary if no message found
                 return "task", self._task_summary(task)
             status = getattr(update, "status", None)
             if status is not None:
@@ -244,6 +272,50 @@ class A2ATranslator:
             return str(status)
         return None
 
+    def _extract_event_metadata(self, event: Any) -> tuple[str | None, float | None, str | None, dict[str, Any] | None]:
+        """Extract structured metadata from A2A events.
+
+        Returns:
+            Tuple of (task_id, progress, artifact_id, metadata)
+        """
+        task_id = None
+        progress = None
+        artifact_id = None
+        metadata = None
+
+        event = self._unwrap_result(event)
+
+        # Extract task information
+        if isinstance(event, tuple) and len(event) == 2:
+            task, update = event
+            task_id = getattr(task, "id", None) or getattr(task, "task_id", None)
+
+            # Extract progress if available
+            if update:
+                progress_val = getattr(update, "progress", None)
+                if progress_val is not None and isinstance(progress_val, (int, float)):
+                    progress = float(progress_val)
+
+                # Extract artifact information
+                artifact = getattr(update, "artifact", None)
+                if artifact:
+                    artifact_id = getattr(artifact, "id", None) or getattr(artifact, "artifact_id", None)
+
+            # Extract task metadata
+            task_metadata = getattr(task, "metadata", None)
+            if task_metadata and isinstance(task_metadata, dict):
+                metadata = dict(task_metadata)
+
+        # Extract message/event metadata
+        event_metadata = getattr(event, "metadata", None)
+        if event_metadata and isinstance(event_metadata, dict):
+            if metadata:
+                metadata.update(event_metadata)
+            else:
+                metadata = dict(event_metadata)
+
+        return task_id, progress, artifact_id, metadata
+
 
 class A2ABridge:
     def __init__(self, client_factory: A2AClientFactory, translator: A2ATranslator) -> None:
@@ -259,24 +331,27 @@ class A2ABridge:
         metadata: dict[str, Any] | None = None,
         configuration: Any | None = None,
     ) -> AgentResponse:
-        client = await self._get_client(base_url)
-        message, request_metadata = self._translator.build_message(text, context, metadata)
+        try:
+            client = await self._get_client(base_url)
+            message, request_metadata = self._translator.build_message(text, context, metadata)
 
-        events: list[AgentEvent] = []
-        async for event in self._iter_events(
-            client,
-            message,
-            request_metadata=request_metadata,
-            configuration=configuration,
-            streaming=False,
-        ):
-            events.append(event)
+            events: list[AgentEvent] = []
+            async for event in self._iter_events(
+                client,
+                message,
+                request_metadata=request_metadata,
+                configuration=configuration,
+                streaming=False,
+            ):
+                events.append(event)
 
-        return AgentResponse(
-            agent=base_url,
-            text=self._translator.reduce_events(events),
-            events=tuple(events),
-        )
+            return AgentResponse(
+                agent=base_url,
+                text=self._translator.reduce_events(events),
+                events=tuple(events),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to send message to A2A agent at {base_url}: {exc}") from exc
 
     async def stream_message(
         self,
@@ -287,17 +362,20 @@ class A2ABridge:
         metadata: dict[str, Any] | None = None,
         configuration: Any | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        client = await self._get_client(base_url)
-        message, request_metadata = self._translator.build_message(text, context, metadata)
+        try:
+            client = await self._get_client(base_url)
+            message, request_metadata = self._translator.build_message(text, context, metadata)
 
-        async for event in self._iter_events(
-            client,
-            message,
-            request_metadata=request_metadata,
-            configuration=configuration,
-            streaming=True,
-        ):
-            yield event
+            async for event in self._iter_events(
+                client,
+                message,
+                request_metadata=request_metadata,
+                configuration=configuration,
+                streaming=True,
+            ):
+                yield event
+        except Exception as exc:
+            raise RuntimeError(f"Failed to stream message to A2A agent at {base_url}: {exc}") from exc
 
     async def get_agent_card(self, base_url: str) -> Any | None:
         client = await self._get_client(base_url)

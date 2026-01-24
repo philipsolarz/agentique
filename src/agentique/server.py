@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from typing import Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import CurrentContext
+from fastmcp.exceptions import ToolError
 from fastmcp.server.lifespan import lifespan
+from fastmcp.tools.tool import ToolResult
 
 from .bridge import RouterBridge
 from .models import AgentDescriptor
@@ -28,6 +31,20 @@ def create_server(
 
     @lifespan
     async def bridge_lifespan(server: FastMCP):
+        # Pre-discover agent capabilities at startup (optional, best-effort)
+        # This reduces latency on first tool invocation
+        for agent_desc in active_router.list_agents():
+            try:
+                # Fetch agent card without context (no logging)
+                card = await bridge.get_agent_card(agent_desc.name)
+                # Pre-parse component definitions
+                tool_defs, prompt_defs = _extract_component_defs(card)
+                # Note: Actual registration happens lazily on first use with proper context
+            except Exception:
+                # Silently ignore discovery failures at startup
+                # Discovery will be retried with proper error reporting on first use
+                pass
+
         yield {"router": active_router}
         await bridge.aclose()
 
@@ -291,18 +308,6 @@ def create_server(
         prompt_fn.__annotations__ = annotations
         return prompt_fn
 
-    def _format_discovery_note(new_tools: list[str], new_prompts: list[str]) -> str:
-        parts: list[str] = []
-        if new_tools:
-            tools_block = ", ".join(f"'{name}'" for name in new_tools)
-            parts.append(f"New tools {tools_block} are now available")
-        if new_prompts:
-            prompts_block = ", ".join(f"'{name}'" for name in new_prompts)
-            parts.append(f"New prompts {prompts_block} are now available")
-        if not parts:
-            return ""
-        return f"[System: {'; '.join(parts)}]"
-
     async def _route_message(
         message: str,
         *,
@@ -311,42 +316,119 @@ def create_server(
         skill: str | None = None,
         metadata: dict[str, Any] | None = None,
         configuration: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        await ctx.info("Routing message to A2A agent.")
-        chunks = []
-        async for chunk in bridge.stream(
-            message,
-            ctx=ctx,
-            agent=agent,
-            skill=skill,
-            metadata=metadata,
-            configuration=configuration,
-        ):
-            chunks.append(chunk)
-            if chunk.kind in {"status", "task"} and chunk.text:
-                await ctx.info(f"Agent working: {chunk.text}")
+    ) -> ToolResult:
+        start_time = time.time()
 
-        if not chunks:
-            return {"agent": agent or "unknown", "text": "", "events": []}
+        try:
+            await ctx.debug(f"Routing request: agent={agent}, skill={skill}")
+            await ctx.info("Routing message to A2A agent.")
+            await ctx.report_progress(0, 100, "Connecting to agent")
 
-        final_agent = chunks[-1].agent if chunks else (agent or "unknown")
-        all_text = " ".join(c.text for c in chunks if c.text).strip()
+            chunks = []
+            task_updates = []
+            has_received_content = False
+            resolved_agent_name = None
 
-        await ctx.report_progress(100, 100, "A2A response received")
-        return {
-            "agent": final_agent,
-            "text": all_text,
-            "events": [c.to_dict() for c in chunks],
-        }
+            async for chunk in bridge.stream(
+                message,
+                ctx=ctx,
+                agent=agent,
+                skill=skill,
+                metadata=metadata,
+                configuration=configuration,
+            ):
+                chunks.append(chunk)
+
+                # Capture the resolved agent name
+                if resolved_agent_name is None:
+                    resolved_agent_name = chunk.agent
+
+                # Track different types of events for progress
+                if chunk.kind == "task" and chunk.text:
+                    task_updates.append(chunk.text)
+                    # Progress from 10 to 90 based on task updates
+                    progress = min(10 + len(task_updates) * 15, 90)
+                    await ctx.report_progress(progress, 100, f"Agent task: {chunk.text}")
+                    await ctx.info(f"Agent working: {chunk.text}")
+
+                elif chunk.kind == "status" and chunk.text:
+                    await ctx.report_progress(50, 100, f"Status: {chunk.text}")
+                    await ctx.info(f"Agent status: {chunk.text}")
+
+                elif chunk.kind in {"message", "artifact"}:
+                    if not has_received_content:
+                        await ctx.report_progress(80, 100, "Receiving response")
+                        has_received_content = True
+
+            if not chunks:
+                await ctx.warning("Agent returned no response chunks")
+                return ToolResult(
+                    content="No response received from agent",
+                    structured_content={
+                        "agent": agent or "unknown",
+                        "text": "",
+                        "events": [],
+                    },
+                )
+
+            final_agent = resolved_agent_name or agent or "unknown"
+            all_text = " ".join(c.text for c in chunks if c.text).strip()
+            elapsed_ms = int((time.time() - start_time) * 1000)
+
+            await ctx.debug(f"Received {len(chunks)} chunks from agent '{final_agent}'")
+            await ctx.report_progress(100, 100, "Response complete")
+
+            # Get event type counts for structured content
+            event_types = {}
+            for chunk in chunks:
+                event_types[chunk.kind] = event_types.get(chunk.kind, 0) + 1
+
+            return ToolResult(
+                content=all_text,  # What the LLM/user sees
+                structured_content={  # For programmatic access
+                    "agent": final_agent,
+                    "event_count": len(chunks),
+                    "event_types": event_types,
+                    "events": [c.to_dict() for c in chunks],
+                },
+                meta={  # Runtime metadata
+                    "execution_time_ms": elapsed_ms,
+                    "chunk_count": len(chunks),
+                    "task_updates": len(task_updates),
+                    "requested_agent": agent,
+                    "requested_skill": skill,
+                },
+            )
+
+        except Exception as exc:
+            await ctx.error(f"A2A agent error: {exc}")
+            agent_name = agent or "unknown agent"
+            raise ToolError(f"Failed to communicate with agent '{agent_name}': {exc}") from exc
 
     async def _discover_agent_components(agent_name: str, ctx: Context) -> tuple[list[str], list[str]]:
-        try:
-            card = await bridge.get_agent_card(agent_name)
-        except Exception as exc:
-            await ctx.warning(f"Failed to fetch agent card for '{agent_name}': {exc}")
-            return [], []
+        await ctx.debug(f"Discovering components for agent '{agent_name}'")
+
+        # Check session cache first
+        cache_key = f"agent_card_{agent_name}"
+        cached_card = await ctx.get_state(cache_key)
+
+        if cached_card:
+            await ctx.debug(f"Using cached agent card for '{agent_name}'")
+            card = cached_card
+        else:
+            try:
+                card = await bridge.get_agent_card(agent_name)
+                # Cache for this session
+                await ctx.set_state(cache_key, card)
+                await ctx.debug(f"Cached agent card for '{agent_name}'")
+            except Exception as exc:
+                await ctx.warning(f"Failed to fetch agent card for '{agent_name}': {exc}")
+                return [], []
 
         tool_defs, prompt_defs = _extract_component_defs(card)
+
+        await ctx.debug(f"Found {len(tool_defs)} tool definitions and {len(prompt_defs)} prompt definitions")
+
         if not tool_defs and not prompt_defs:
             return [], []
 
@@ -431,23 +513,62 @@ def create_server(
         message: str,
         agent: str | None = None,
         skill: str | None = None,
+        continue_conversation: bool = False,
         metadata: dict[str, Any] | None = None,
         configuration: dict[str, Any] | None = None,
         ctx: Context = CurrentContext(),
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         """Route a message to an A2A agent and return its response.
 
         Uses streaming internally to keep the connection alive during long-running
         operations, while still returning the final aggregated result.
+
+        Args:
+            message: The message to send to the agent
+            agent: Optional agent name to route to
+            skill: Optional skill name for routing
+            continue_conversation: If True, maintains conversation history across calls
+            metadata: Optional metadata to include
+            configuration: Optional configuration for the A2A request
+            ctx: MCP context (injected automatically)
+
+        Returns:
+            Dictionary with agent response including text and events
         """
-        return await _route_message(
-            message,
+        # Handle conversation continuity
+        conversation_key = f"conversation_{agent or 'default'}"
+        message_to_send = message
+
+        if continue_conversation:
+            history = await ctx.get_state(conversation_key) or []
+            if history:
+                await ctx.debug(f"Continuing conversation with {len(history)} previous turns")
+                # Add conversation context to metadata
+                if metadata is None:
+                    metadata = {}
+                metadata["conversation_history"] = history[-10:]  # Last 10 turns
+
+        response = await _route_message(
+            message_to_send,
             ctx=ctx,
             agent=agent,
             skill=skill,
             metadata=metadata,
             configuration=configuration,
         )
+
+        # Update conversation history if enabled
+        if continue_conversation:
+            history = await ctx.get_state(conversation_key) or []
+            history.append({"role": "user", "content": message})
+            # ToolResult stores content as a string or content blocks
+            response_text = response.content if isinstance(response.content, str) else str(response.content)
+            history.append({"role": "agent", "content": response_text})
+            # Keep last 20 turns (10 exchanges)
+            await ctx.set_state(conversation_key, history[-20:])
+            await ctx.debug(f"Updated conversation history: {len(history)} total turns")
+
+        return response
 
     @mcp.tool
     async def a2a_stream(
@@ -458,9 +579,16 @@ def create_server(
         configuration: dict[str, Any] | None = None,
         ctx: Context = CurrentContext(),
     ):
-        """Stream a response from an A2A agent as chunks."""
+        """Stream a response from an A2A agent as text.
+
+        Progress and status updates are sent through context logging and progress reporting.
+        Only actual agent text responses are yielded as streaming content.
+        """
 
         await ctx.info("Starting A2A streaming response.")
+        index = 0
+        total_chunks = 0
+
         async for chunk in bridge.stream(
             message,
             ctx=ctx,
@@ -469,10 +597,21 @@ def create_server(
             metadata=metadata,
             configuration=configuration,
         ):
-            if chunk.kind in {"status", "task"} and chunk.text:
-                await ctx.info(f"A2A update: {chunk.text}")
-            yield chunk.to_dict()
-        await ctx.report_progress(100, 100, "A2A streaming completed")
+            total_chunks += 1
+
+            # Progress and status go to side-channel
+            if chunk.kind in {"status", "task"}:
+                if chunk.text:
+                    await ctx.info(f"[{chunk.kind.upper()}] {chunk.text}")
+                await ctx.report_progress(index, index + 1, chunk.kind)
+
+            # Only yield actual text content that should be part of the response
+            if chunk.kind in {"message", "artifact"} and chunk.text:
+                yield chunk.text
+
+            index += 1
+
+        await ctx.report_progress(total_chunks, total_chunks, "A2A streaming completed")
 
     @mcp.tool
     def a2a_list_agents() -> list[dict[str, Any]]:
@@ -493,7 +632,7 @@ def create_server(
             metadata: dict[str, Any] | None = None,
             configuration: dict[str, Any] | None = None,
             ctx: Context = CurrentContext(),
-        ) -> dict[str, Any]:
+        ) -> ToolResult:
             response_task = asyncio.create_task(
                 _route_message(
                     message,
@@ -506,10 +645,14 @@ def create_server(
             discovery_task = asyncio.create_task(_discover_agent_components(agent_name, ctx))
             response = await response_task
             new_tools, new_prompts = await discovery_task
-            note = _format_discovery_note(new_tools, new_prompts)
-            if note:
-                response_text = response.get("text") or ""
-                response["text"] = f"{response_text} {note}".strip()
+
+            # Send discovery notifications through proper channel - don't pollute response text
+            if new_tools:
+                await ctx.info(f"Discovered new tools: {', '.join(new_tools)}")
+            if new_prompts:
+                await ctx.info(f"Discovered new prompts: {', '.join(new_prompts)}")
+
+            # Return clean agent response - NO text pollution
             return response
 
         agent_tool.__name__ = agent_name
@@ -525,32 +668,32 @@ def create_server(
         _register_agent_tool(agent_descriptor)
 
     @mcp.resource("a2a://agents")
-    async def a2a_agents_resource(ctx: Context = CurrentContext()) -> dict[str, Any]:
+    async def a2a_agents_resource(ctx: Context = CurrentContext()) -> str:
         """Provide agent catalog data to MCP clients."""
 
-        return {
+        return json.dumps({
             "agents": [agent.to_dict() for agent in active_router.list_agents()],
             "session_id": getattr(ctx, "session_id", None),
-        }
+        })
 
     @mcp.resource("a2a://agents/{agent}")
-    async def a2a_agent_resource(agent: str, ctx: Context = CurrentContext()) -> dict[str, Any]:
+    async def a2a_agent_resource(agent: str, ctx: Context = CurrentContext()) -> str:
         descriptor = active_router.describe(agent)
-        return {
+        return json.dumps({
             "agent": descriptor.to_dict(),
             "session_id": getattr(ctx, "session_id", None),
-        }
+        })
 
     @mcp.resource("a2a://agents/{agent}/card")
-    async def a2a_agent_card_resource(agent: str) -> dict[str, Any]:
+    async def a2a_agent_card_resource(agent: str) -> str:
         card = await bridge.get_agent_card(agent)
         if card is None:
-            return {"agent": agent, "card": None}
+            return json.dumps({"agent": agent, "card": None})
         if hasattr(card, "model_dump"):
-            return {"agent": agent, "card": card.model_dump()}
+            return json.dumps({"agent": agent, "card": card.model_dump()})
         if hasattr(card, "dict"):
-            return {"agent": agent, "card": card.dict()}
-        return {"agent": agent, "card": card}
+            return json.dumps({"agent": agent, "card": card.dict()})
+        return json.dumps({"agent": agent, "card": card})
 
     @mcp.prompt
     async def a2a_routing_prompt(goal: str, ctx: Context = CurrentContext()) -> str:

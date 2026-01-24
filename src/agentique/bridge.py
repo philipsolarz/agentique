@@ -57,19 +57,47 @@ class RouterBridge:
         metadata: dict[str, Any] | None = None,
         configuration: Any | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        descriptor = self._router.resolve(name=agent, skill=skill)
-        snapshot = McpContextSnapshot.from_context(ctx)
-        index = 0
-        async for event in self._a2a.stream_message(
-            descriptor.base_url,
-            text,
-            context=snapshot,
-            metadata=metadata,
-            configuration=configuration,
-        ):
-            chunk = self._translator.event_to_chunk(descriptor.name, index, event)
-            index += 1
-            yield chunk
+        try:
+            # Log routing decision
+            if hasattr(ctx, 'debug'):
+                await ctx.debug(f"Resolving agent with name={agent}, skill={skill}")
+
+            descriptor = self._router.resolve(name=agent, skill=skill)
+
+            if hasattr(ctx, 'debug'):
+                await ctx.debug(f"Resolved to agent: {descriptor.name} at {descriptor.base_url}")
+
+            snapshot = McpContextSnapshot.from_context(ctx)
+
+            if hasattr(ctx, 'debug'):
+                await ctx.debug(f"MCP context: session_id={snapshot.session_id}, request_id={snapshot.request_id}")
+
+            index = 0
+            async for event in self._a2a.stream_message(
+                descriptor.base_url,
+                text,
+                context=snapshot,
+                metadata=metadata,
+                configuration=configuration,
+            ):
+                chunk = self._translator.event_to_chunk(descriptor.name, index, event)
+                index += 1
+
+                # Debug log for non-content events
+                if hasattr(ctx, 'debug') and chunk.kind not in {"message", "artifact"}:
+                    await ctx.debug(f"Event {index}: kind={chunk.kind}, text={chunk.text}")
+
+                yield chunk
+        except KeyError as exc:
+            # Router couldn't find agent
+            if hasattr(ctx, 'error'):
+                await ctx.error(f"Agent routing failed: {exc}")
+            raise RuntimeError(f"Agent routing failed: {exc}") from exc
+        except Exception as exc:
+            # A2A communication error
+            if hasattr(ctx, 'error'):
+                await ctx.error(f"A2A communication error: {exc}")
+            raise RuntimeError(f"A2A communication error: {exc}") from exc
 
     async def get_agent_card(self, agent: str) -> Any | None:
         descriptor = self._router.describe(agent)

@@ -60,12 +60,27 @@ class AgentEvent:
     kind: str
     text: str | None
     raw: Any | None = None
+    # Additional structured event data
+    task_id: str | None = None
+    progress: float | None = None
+    artifact_id: str | None = None
+    event_metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "kind": self.kind,
             "text": self.text,
         }
+        # Include optional fields if present
+        if self.task_id is not None:
+            result["task_id"] = self.task_id
+        if self.progress is not None:
+            result["progress"] = self.progress
+        if self.artifact_id is not None:
+            result["artifact_id"] = self.artifact_id
+        if self.event_metadata:
+            result["metadata"] = self.event_metadata
+        return result
 
 
 @dataclass(frozen=True)
