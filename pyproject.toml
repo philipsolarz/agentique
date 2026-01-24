@@ -1,0 +1,13 @@
+[project]
+name = "agentique"
+version = "0.1.2"
+description = "Bridge the Model Context Protocol with the Agent2Agent protocol."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=3.0.0b1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
