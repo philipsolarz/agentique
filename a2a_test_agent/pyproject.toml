@@ -1,0 +1,18 @@
+[project]
+name = "adk-test-agent"
+version = "0.2.0"
+description = "Enhanced Google ADK multi-agent system exposed via A2A for comprehensive MCP bridge testing."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-adk[a2a]>=0.1.0",
+    "uvicorn>=0.27.0",
+    "starlette>=0.36.0",
+]
+
+[project.scripts]
+adk-test-agent = "adk_test_agent.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
