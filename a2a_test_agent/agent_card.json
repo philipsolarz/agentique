@@ -1,0 +1,315 @@
+{
+  "name": "TestAgentRoot",
+  "description": "Multi-capability test agent that orchestrates specialized subagents for calculations, data processing, text manipulation, information retrieval, interactive workflows, background tasks, and sub-agent visibility demonstrations.",
+  "version": "0.3.0",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "extensions": [
+      {
+        "uri": "urn:mcp:extension:tools",
+        "params": {
+          "mcpTools": [
+            {
+              "name": "calculate",
+              "description": "Perform arithmetic calculations (add, subtract, multiply, divide) or compute statistics on number lists.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["add", "subtract", "multiply", "divide", "statistics"],
+                    "description": "The operation to perform"
+                  },
+                  "a": {
+                    "type": "number",
+                    "description": "First operand (for binary operations)"
+                  },
+                  "b": {
+                    "type": "number",
+                    "description": "Second operand (for binary operations)"
+                  },
+                  "numbers": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "description": "List of numbers (for statistics)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "process_data",
+              "description": "Process lists of data with filtering, sorting, or counting operations.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["filter", "sort", "count"],
+                    "description": "The data operation to perform"
+                  },
+                  "items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of items to process"
+                  },
+                  "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern for filtering"
+                  },
+                  "reverse": {
+                    "type": "boolean",
+                    "description": "Reverse sort order"
+                  }
+                },
+                "required": ["operation", "items"]
+              }
+            },
+            {
+              "name": "transform_text",
+              "description": "Transform or analyze text with various operations.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "The text to transform"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "enum": ["upper", "lower", "title", "reverse", "count_words", "extract_keywords"],
+                    "description": "The transformation to apply"
+                  }
+                },
+                "required": ["text", "operation"]
+              }
+            },
+            {
+              "name": "request_confirmation",
+              "description": "Request user confirmation before executing a dangerous operation. Triggers the tool confirmation flow.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "description": "The action that requires confirmation"
+                  },
+                  "details": {
+                    "type": "string",
+                    "description": "Details about what will happen"
+                  },
+                  "danger_level": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "description": "How dangerous is this action"
+                  }
+                },
+                "required": ["action"]
+              },
+              "annotations": {
+                "requiresConfirmation": true,
+                "dangerous": true
+              }
+            },
+            {
+              "name": "run_background_task",
+              "description": "Execute a long-running task in the background with progress updates. Tests SEP-1686 background task support.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "task_name": {
+                    "type": "string",
+                    "description": "Name of the task"
+                  },
+                  "duration_seconds": {
+                    "type": "number",
+                    "description": "How long the task should run",
+                    "default": 5.0
+                  },
+                  "steps": {
+                    "type": "integer",
+                    "description": "Number of progress steps to report",
+                    "default": 10
+                  }
+                },
+                "required": ["task_name"]
+              },
+              "annotations": {
+                "longRunning": true,
+                "supportsProgress": true
+              }
+            },
+            {
+              "name": "elicit_input",
+              "description": "Request input from the user via elicitation. Tests human-in-the-loop workflows.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "description": "The question to ask the user"
+                  },
+                  "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of choices"
+                  },
+                  "required_response": {
+                    "type": "boolean",
+                    "description": "Whether a response is required",
+                    "default": true
+                  }
+                },
+                "required": ["question"]
+              },
+              "annotations": {
+                "requiresUserInput": true,
+                "elicitation": true
+              }
+            },
+            {
+              "name": "demonstrate_state",
+              "description": "Set the task to a specific state for testing state machine alignment.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "target_state": {
+                    "type": "string",
+                    "enum": ["submitted", "working", "input-required", "completed", "failed", "canceled"],
+                    "description": "The state to transition to"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Optional message for the state"
+                  }
+                },
+                "required": ["target_state"]
+              }
+            }
+          ],
+          "mcpPrompts": [
+            {
+              "name": "test_routing",
+              "description": "Generate a prompt for testing agent routing and sampling",
+              "arguments": [
+                {
+                  "name": "task",
+                  "description": "The task to route",
+                  "required": true
+                }
+              ],
+              "template": "Route the following task to the most appropriate subagent:\n\nTask: {task}\n\nAvailable subagents:\n- Calculator: Math and statistics\n- DataProcessor: List operations\n- TextProcessor: Text manipulation\n- InfoRetriever: Knowledge lookup\n- Interactive: User confirmations\n- Workflow: Background tasks\n- BranchDemo: Hierarchy testing"
+            },
+            {
+              "name": "multi_step_workflow",
+              "description": "Template for multi-step workflows requiring coordination",
+              "arguments": [
+                {
+                  "name": "workflow_type",
+                  "description": "Type of workflow (data_pipeline, interactive_wizard, batch_job)",
+                  "required": true
+                }
+              ],
+              "template": "Execute a {workflow_type} workflow with the following phases:\n1. Initialize and validate inputs\n2. Process with progress tracking\n3. Request user confirmation if needed\n4. Complete and report results"
+            }
+          ],
+          "mcpResources": [
+            {
+              "uri": "test://subagents",
+              "name": "Subagent Catalog",
+              "description": "List of all available subagents and their capabilities",
+              "mimeType": "application/json"
+            },
+            {
+              "uri": "test://state-machine",
+              "name": "Task State Reference",
+              "description": "Reference for A2A task state machine states and transitions",
+              "mimeType": "application/json"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "skills": [
+    {
+      "name": "calculation",
+      "description": "Perform arithmetic operations and statistical calculations"
+    },
+    {
+      "name": "data_processing",
+      "description": "Filter, sort, and analyze lists of data"
+    },
+    {
+      "name": "text_manipulation",
+      "description": "Transform and analyze text"
+    },
+    {
+      "name": "information_retrieval",
+      "description": "Search knowledge base and retrieve facts"
+    },
+    {
+      "name": "user_interaction",
+      "description": "Handle confirmations, preferences, and multi-step wizards"
+    },
+    {
+      "name": "workflow_orchestration",
+      "description": "Execute long-running tasks and batch processing"
+    },
+    {
+      "name": "hierarchy_demo",
+      "description": "Demonstrate sub-agent visibility and branch tracking"
+    }
+  ],
+  "metadata": {
+    "author": "AgentMCP Test Suite",
+    "features_tested": [
+      "provider_architecture",
+      "background_tasks",
+      "user_elicitation",
+      "sampling",
+      "task_state_machine",
+      "sub_agent_visibility",
+      "tool_confirmation"
+    ],
+    "sub_agents": [
+      {
+        "name": "Calculator",
+        "description": "Performs arithmetic operations and statistical calculations",
+        "skills": ["add", "subtract", "multiply", "divide", "statistics"]
+      },
+      {
+        "name": "DataProcessor",
+        "description": "Processes lists with filtering, sorting, and analysis",
+        "skills": ["filter", "sort", "count", "batch_process"]
+      },
+      {
+        "name": "TextProcessor",
+        "description": "Manipulates and analyzes text",
+        "skills": ["transform_case", "count_words", "extract_keywords", "reverse"]
+      },
+      {
+        "name": "InfoRetriever",
+        "description": "Retrieves information and facts",
+        "skills": ["search", "random_fact", "fetch_data"]
+      },
+      {
+        "name": "Interactive",
+        "description": "Handles user confirmations and elicitation",
+        "skills": ["request_preference", "confirm_action", "dangerous_operation", "wizard"]
+      },
+      {
+        "name": "Workflow",
+        "description": "Handles long-running tasks and state machine demos",
+        "skills": ["long_running_task", "batch_processor", "simulate_failure", "state_machine_demo"]
+      },
+      {
+        "name": "BranchDemo",
+        "description": "Demonstrates sub-agent visibility",
+        "skills": ["announce_branch", "delegate_to_sub"]
+      }
+    ]
+  }
+}

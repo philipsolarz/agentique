@@ -2,6 +2,15 @@
 
 This module exposes the test agent via the A2A protocol using the
 google-adk's to_a2a utility, making it accessible to A2A clients.
+
+Enhanced for testing AgentMCP features:
+- Provider Architecture (MCP tool definitions in agent card)
+- Background Tasks (SEP-1686)
+- User Elicitation (Human-in-the-Loop)
+- Sampling (Agentic LLM Workflows)
+- Task State Machine Alignment
+- Sub-Agent Visibility
+- Tool Confirmation Flow
 """
 
 from __future__ import annotations
@@ -22,6 +31,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Default agent card path (relative to this file's package)
+DEFAULT_AGENT_CARD = Path(__file__).parent.parent.parent / "agent_card.json"
+
 
 def build_app() -> object:
     """Build the A2A Starlette application.
@@ -40,8 +52,12 @@ def build_app() -> object:
     root_agent = build_root_agent()
     logger.info(f"Root agent '{root_agent.name}' built successfully")
 
-    # Determine agent card path if provided
+    # Determine agent card path
+    # Priority: environment variable > default path
     agent_card_path = os.getenv("A2A_AGENT_CARD")
+    if not agent_card_path and DEFAULT_AGENT_CARD.exists():
+        agent_card_path = str(DEFAULT_AGENT_CARD)
+        logger.info(f"Using default agent card: {agent_card_path}")
 
     # If base URL is provided, use it to construct the host and port
     # This is important for Docker environments where internal and external URLs differ

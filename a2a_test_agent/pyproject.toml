@@ -1,7 +1,7 @@
 [project]
 name = "adk-test-agent"
-version = "0.2.0"
-description = "Enhanced Google ADK multi-agent system exposed via A2A for comprehensive MCP bridge testing."
+version = "0.3.0"
+description = "Enhanced Google ADK multi-agent system exposed via A2A for comprehensive AgentMCP testing. Tests all 7 features: Provider Architecture, Background Tasks, User Elicitation, Sampling, Task State Machine, Sub-Agent Visibility, and Tool Confirmation."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +13,15 @@ dependencies = [
 [project.scripts]
 adk-test-agent = "adk_test_agent.server:main"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/adk_test_agent"]

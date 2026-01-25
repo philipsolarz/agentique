@@ -148,23 +148,89 @@ class A2ATranslator:
 
     def to_event(self, event: Any) -> AgentEvent:
         kind, text = self._event_to_text(event)
-        task_id, progress, artifact_id, event_metadata = self._extract_event_metadata(event)
+        metadata = self._extract_full_event_metadata(event)
         return AgentEvent(
             kind=kind,
             text=text,
             raw=event,
-            task_id=task_id,
-            progress=progress,
-            artifact_id=artifact_id,
-            event_metadata=event_metadata,
+            task_id=metadata.get("task_id"),
+            context_id=metadata.get("context_id"),
+            progress=metadata.get("progress"),
+            artifact_id=metadata.get("artifact_id"),
+            artifact_name=metadata.get("artifact_name"),
+            branch=metadata.get("branch"),
+            author=metadata.get("author"),
+            state=metadata.get("state"),
+            is_final=metadata.get("is_final", False),
+            requires_confirmation=metadata.get("requires_confirmation", False),
+            tool_call=metadata.get("tool_call"),
+            event_metadata=metadata.get("event_metadata"),
         )
+
+    def _extract_full_event_metadata(self, event: Any) -> dict[str, Any]:
+        """Extract comprehensive metadata from A2A events including sub-agent info."""
+        result: dict[str, Any] = {}
+        event = self._unwrap_result(event)
+
+        # Handle tuple events (task, update)
+        if isinstance(event, tuple) and len(event) == 2:
+            task, update = event
+            result["task_id"] = getattr(task, "id", None) or getattr(task, "task_id", None)
+            result["context_id"] = getattr(task, "context_id", None)
+
+            # Extract status/state
+            status = getattr(task, "status", None)
+            if status:
+                state = getattr(status, "state", None)
+                if state:
+                    result["state"] = str(state.value) if hasattr(state, "value") else str(state)
+                result["is_final"] = getattr(update, "final", False) if update else False
+
+            if update:
+                # Progress
+                progress_val = getattr(update, "progress", None)
+                if progress_val is not None and isinstance(progress_val, (int, float)):
+                    result["progress"] = float(progress_val)
+
+                # Artifact
+                artifact = getattr(update, "artifact", None)
+                if artifact:
+                    result["artifact_id"] = getattr(artifact, "id", None) or getattr(artifact, "artifact_id", None)
+                    result["artifact_name"] = getattr(artifact, "name", None)
+
+            # Task metadata (may contain branch info from ADK)
+            task_metadata = getattr(task, "metadata", None)
+            if task_metadata and isinstance(task_metadata, dict):
+                result["event_metadata"] = dict(task_metadata)
+                # Extract ADK-specific fields
+                result["branch"] = task_metadata.get("branch")
+                result["author"] = task_metadata.get("author")
+
+        # Handle direct message/event
+        else:
+            result["task_id"] = getattr(event, "task_id", None)
+            result["context_id"] = getattr(event, "context_id", None)
+
+            # Check for branch/author in message metadata (ADK pattern)
+            event_metadata = getattr(event, "metadata", None)
+            if event_metadata and isinstance(event_metadata, dict):
+                result["event_metadata"] = dict(event_metadata)
+                result["branch"] = event_metadata.get("branch")
+                result["author"] = event_metadata.get("author")
+
+                # Check for tool confirmation request
+                if event_metadata.get("requires_confirmation"):
+                    result["requires_confirmation"] = True
+                    result["tool_call"] = event_metadata.get("tool_call")
+
+        return result
 
     def reduce_events(self, events: list[AgentEvent]) -> str:
         text_parts = [event.text for event in events if event.text]
         return "".join(text_parts).strip()
 
     def event_to_chunk(self, agent: str, index: int, event: AgentEvent) -> StreamChunk:
-        return StreamChunk(agent=agent, index=index, kind=event.kind, text=event.text)
+        return StreamChunk.from_event(agent, index, event)
 
     def _event_to_text(self, event: Any) -> tuple[str, str | None]:
         event = self._unwrap_result(event)

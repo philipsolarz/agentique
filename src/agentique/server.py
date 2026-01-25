@@ -1,20 +1,59 @@
+"""FastMCP server for A2A agent integration.
+
+This module implements a transparent MCP-A2A bridge using FastMCP 3.0's
+Provider architecture. The bridge allows MCP clients to interact with
+A2A agents as if they were natively exposed through MCP.
+
+Core principles (from mission):
+- Transparent bridging, not black-box proxying
+- Agent-centric design (agents are the stars, not the bridge)
+- Real-time interactivity (streaming by default)
+- Preserve agent semantics and structure visibility
+
+Tools provided:
+- agent: Send message to any A2A agent (streams response)
+- agents: List available A2A agents
+- task: Query task state for transparency
+- inspect: View agent's internal structure (sub-agents, tools)
+"""
+
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
-import time
+from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import CurrentContext
-from fastmcp.exceptions import ToolError
-from fastmcp.server.lifespan import lifespan
-from fastmcp.tools.tool import ToolResult
 
 from .bridge import RouterBridge
-from .models import AgentDescriptor
+from .models import (
+    AgentHierarchy,
+    TaskState,
+    TaskTracker,
+)
+from .provider import A2AAgentProvider
 from .router import AgentRouter
+
+
+@dataclass
+class ServerConfig:
+    """Configuration for the A2A MCP server.
+
+    The server acts as a transparent bridge between MCP clients and A2A agents.
+    Configuration options control which advanced features are enabled.
+    """
+
+    name: str = "Agentique"
+    # Feature flags
+    enable_background_tasks: bool = True
+    enable_elicitation: bool = True
+    enable_tool_confirmation: bool = True
+    # Performance tuning
+    cache_ttl: float = 300.0
+    prefetch_cards: bool = True
 
 
 def create_server(
@@ -23,696 +62,445 @@ def create_server(
     agents: list[AgentDescriptor] | None = None,
     router: AgentRouter | None = None,
     client_factory: Any | None = None,
+    config: ServerConfig | None = None,
 ) -> FastMCP:
-    """Create a FastMCP server that routes requests to A2A agents."""
+    """Create a FastMCP server that routes requests to A2A agents.
 
+    This creates a server using FastMCP 3.0's Provider architecture for clean
+    dynamic component sourcing from A2A agents.
+
+    Args:
+        name: Server name
+        agents: List of agent descriptors
+        router: Optional pre-configured router
+        client_factory: Optional A2A client factory
+        config: Optional server configuration
+
+    Returns:
+        Configured FastMCP server instance
+    """
+    config = config or ServerConfig(name=name)
     active_router = router or AgentRouter(agents or [])
+
+    # Create the A2A Agent Provider
+    provider = A2AAgentProvider(
+        agents=active_router.list_agents(),
+        client_factory=client_factory,
+        cache_ttl=config.cache_ttl,
+        prefetch_cards=config.prefetch_cards,
+    )
+
+    # Create the server with the provider
+    mcp = FastMCP(config.name, providers=[provider])
+
+    # Create bridge for direct access (used by core tools)
     bridge = RouterBridge(active_router, client_factory=client_factory)
 
-    @lifespan
-    async def bridge_lifespan(server: FastMCP):
-        # Pre-discover agent capabilities at startup (optional, best-effort)
-        # This reduces latency on first tool invocation
-        for agent_desc in active_router.list_agents():
-            try:
-                # Fetch agent card without context (no logging)
-                card = await bridge.get_agent_card(agent_desc.name)
-                # Pre-parse component definitions
-                tool_defs, prompt_defs = _extract_component_defs(card)
-                # Note: Actual registration happens lazily on first use with proper context
-            except Exception:
-                # Silently ignore discovery failures at startup
-                # Discovery will be retried with proper error reporting on first use
-                pass
+    # Task tracking for state machine
+    task_trackers: dict[str, TaskTracker] = {}
+    task_lock = asyncio.Lock()
 
-        yield {"router": active_router}
-        await bridge.aclose()
+    # =========================================================================
+    # Core Tools - Mission-Aligned, Generic Bridge Interface
+    # =========================================================================
+    #
+    # These tools provide a transparent bridge to A2A agents:
+    # - `agent`: Primary interaction (streams by default for real-time interactivity)
+    # - `agents`: Discovery (what's available)
+    # - `task`: State query (transparency into what's happening)
+    # - `inspect`: Introspection (visibility into multi-agent structure)
+    #
+    # The naming is generic and agent-centric, not feature-specific.
+    # =========================================================================
 
-    mcp = FastMCP(name, lifespan=bridge_lifespan)
+    # Track conversation contexts for continuity
+    conversation_contexts: dict[str, list[dict[str, str]]] = {}
 
-    registered_tool_names: set[str] = set()
-    registered_prompt_names: set[str] = set()
-    tool_registry: dict[tuple[str, str], str] = {}
-    prompt_registry: dict[tuple[str, str], str] = {}
-    registration_lock = asyncio.Lock()
-
-    def _mark_tool(name: str) -> None:
-        registered_tool_names.add(name)
-
-    def _mark_prompt(name: str) -> None:
-        registered_prompt_names.add(name)
-
-    def _read_field(payload: Any, *names: str) -> Any:
-        for name in names:
-            if isinstance(payload, dict) and name in payload:
-                return payload[name]
-            if hasattr(payload, name):
-                return getattr(payload, name)
-        return None
-
-    def _normalize_list(value: Any) -> list[Any]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, tuple):
-            return list(value)
-        return [value]
-
-    def _coerce_card_payload(card: Any) -> dict[str, Any]:
-        if card is None:
-            return {}
-        if isinstance(card, dict):
-            return dict(card)
-        payload: dict[str, Any] = {}
-        extra = getattr(card, "model_extra", None) or getattr(card, "__pydantic_extra__", None)
-        if isinstance(extra, dict):
-            payload.update(extra)
-        if hasattr(card, "model_dump"):
-            try:
-                payload.update(card.model_dump())
-            except Exception:
-                pass
-        elif hasattr(card, "dict"):
-            try:
-                payload.update(card.dict())
-            except Exception:
-                pass
-        return payload
-
-    def _extract_extensions(card: Any) -> list[Any]:
-        if card is None:
-            return []
-        if isinstance(card, dict):
-            capabilities = card.get("capabilities") or {}
-            return _normalize_list(capabilities.get("extensions") or card.get("extensions"))
-        capabilities = getattr(card, "capabilities", None)
-        if capabilities is not None:
-            extensions = getattr(capabilities, "extensions", None)
-            if extensions:
-                return list(extensions)
-        extensions = getattr(card, "extensions", None)
-        if extensions:
-            return list(extensions)
-        return []
-
-    def _extract_component_defs(card: Any) -> tuple[list[Any], list[Any]]:
-        payload = _coerce_card_payload(card)
-        tools = _normalize_list(payload.get("mcp_tools") or payload.get("mcpTools"))
-        prompts = _normalize_list(payload.get("mcp_prompts") or payload.get("mcpPrompts"))
-        for extension in _extract_extensions(card):
-            params = _read_field(extension, "params", "parameters")
-            if isinstance(params, str):
-                try:
-                    params = json.loads(params)
-                except Exception:
-                    params = None
-            if isinstance(params, dict):
-                tools.extend(_normalize_list(params.get("mcp_tools") or params.get("mcpTools")))
-                prompts.extend(_normalize_list(params.get("mcp_prompts") or params.get("mcpPrompts")))
-        return tools, prompts
-
-    def _json_schema_type(schema: Any) -> Any:
-        if not isinstance(schema, dict):
-            return Any
-        schema_type = schema.get("type")
-        if isinstance(schema_type, list):
-            non_null = [item for item in schema_type if item != "null"]
-            if not non_null:
-                return Any
-            base = _json_schema_type({"type": non_null[0]})
-            return base | None
-        if schema_type == "string":
-            return str
-        if schema_type == "integer":
-            return int
-        if schema_type == "number":
-            return float
-        if schema_type == "boolean":
-            return bool
-        if schema_type == "array":
-            return list[Any]
-        if schema_type == "object":
-            return dict[str, Any]
-        return Any
-
-    def _parameters_from_schema(schema: Any) -> list[inspect.Parameter]:
-        if not isinstance(schema, dict):
-            return []
-        schema_type = schema.get("type")
-        if schema_type not in (None, "object"):
-            return []
-        properties = schema.get("properties") or {}
-        if not isinstance(properties, dict) or not properties:
-            return []
-        required = set(schema.get("required") or [])
-        params: list[inspect.Parameter] = []
-        for name, prop in properties.items():
-            annotation = _json_schema_type(prop)
-            if name in required:
-                default = prop.get("default", inspect._empty)
-            else:
-                default = prop.get("default", None)
-            params.append(
-                inspect.Parameter(
-                    name,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    default=default,
-                    annotation=annotation,
-                )
-            )
-        return params
-
-    def _parameters_from_arguments(arguments: Any) -> list[inspect.Parameter]:
-        if not isinstance(arguments, list):
-            return []
-        params: list[inspect.Parameter] = []
-        for arg in arguments:
-            if not isinstance(arg, dict):
-                continue
-            name = _read_field(arg, "name", "arg", "id")
-            if not name:
-                continue
-            schema = _read_field(arg, "schema", "input_schema", "inputSchema")
-            if schema is None:
-                arg_type = _read_field(arg, "type")
-                if arg_type:
-                    schema = {"type": arg_type}
-            annotation = _json_schema_type(schema or {})
-            required = bool(_read_field(arg, "required"))
-            if required:
-                default = arg.get("default", inspect._empty)
-            else:
-                default = arg.get("default", None)
-            params.append(
-                inspect.Parameter(
-                    name,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    default=default,
-                    annotation=annotation,
-                )
-            )
-        return params
-
-    def _resolve_component_name(base: str, agent_name: str, used: set[str]) -> str:
-        if base not in used:
-            return base
-        candidate = f"{agent_name}_{base}"
-        if candidate not in used:
-            return candidate
-        index = 2
-        while f"{candidate}_{index}" in used:
-            index += 1
-        return f"{candidate}_{index}"
-
-    def _render_prompt(prompt_def: Any, prompt_name: str, agent_name: str, args: dict[str, Any]) -> str:
-        template = _read_field(prompt_def, "template", "prompt", "text", "content")
-        if isinstance(template, str):
-            try:
-                return template.format(**args)
-            except Exception:
-                return template
-        messages = _read_field(prompt_def, "messages")
-        if isinstance(messages, list):
-            rendered: list[str] = []
-            for message in messages:
-                if not isinstance(message, dict):
-                    continue
-                role = message.get("role", "user")
-                content = message.get("content") or message.get("text")
-                if isinstance(content, str):
-                    try:
-                        content = content.format(**args)
-                    except Exception:
-                        pass
-                    rendered.append(f"{role}: {content}")
-            if rendered:
-                return "\n".join(rendered)
-        return f"Prompt '{prompt_name}' for agent '{agent_name}'."
-
-    def _build_tool_function(
-        *,
-        agent_name: str,
-        tool_name: str,
-        registered_name: str,
-        description: str | None,
-        parameters: list[inspect.Parameter],
-    ):
-        async def tool_fn(*, ctx: Context = CurrentContext(), **kwargs: Any) -> dict[str, Any]:
-            payload = {"tool": tool_name, "arguments": kwargs}
-            message = json.dumps(payload, default=str)
-            return await _route_message(
-                message,
-                agent=agent_name,
-                metadata={"mcp_tool_call": payload},
-                ctx=ctx,
-            )
-
-        tool_fn.__name__ = registered_name
-        tool_fn.__doc__ = description or f"Proxy to agent '{agent_name}' tool '{tool_name}'."
-        ctx_param = inspect.Parameter(
-            "ctx",
-            kind=inspect.Parameter.KEYWORD_ONLY,
-            default=CurrentContext(),
-            annotation=Context,
-        )
-        signature = inspect.Signature(parameters=[*parameters, ctx_param])
-        tool_fn.__signature__ = signature
-        annotations: dict[str, Any] = {"return": dict[str, Any]}
-        for param in signature.parameters.values():
-            if param.annotation is not inspect._empty:
-                annotations[param.name] = param.annotation
-        tool_fn.__annotations__ = annotations
-        return tool_fn
-
-    def _build_prompt_function(
-        *,
-        agent_name: str,
-        prompt_name: str,
-        registered_name: str,
-        description: str | None,
-        prompt_def: Any,
-        parameters: list[inspect.Parameter],
-    ):
-        def prompt_fn(**kwargs: Any) -> str:
-            return _render_prompt(prompt_def, prompt_name, agent_name, kwargs)
-
-        prompt_fn.__name__ = registered_name
-        prompt_fn.__doc__ = description or f"Prompt '{prompt_name}' from agent '{agent_name}'."
-        signature = inspect.Signature(parameters=parameters)
-        prompt_fn.__signature__ = signature
-        annotations: dict[str, Any] = {"return": str}
-        for param in signature.parameters.values():
-            if param.annotation is not inspect._empty:
-                annotations[param.name] = param.annotation
-        prompt_fn.__annotations__ = annotations
-        return prompt_fn
-
-    async def _route_message(
+    @mcp.tool(name="agent")
+    async def agent_tool(
         message: str,
-        *,
-        ctx: Context,
-        agent: str | None = None,
-        skill: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        configuration: dict[str, Any] | None = None,
-    ) -> ToolResult:
-        start_time = time.time()
-
-        try:
-            await ctx.debug(f"Routing request: agent={agent}, skill={skill}")
-            await ctx.info("Routing message to A2A agent.")
-            await ctx.report_progress(0, 100, "Connecting to agent")
-
-            chunks = []
-            task_updates = []
-            has_received_content = False
-            resolved_agent_name = None
-
-            async for chunk in bridge.stream(
-                message,
-                ctx=ctx,
-                agent=agent,
-                skill=skill,
-                metadata=metadata,
-                configuration=configuration,
-            ):
-                chunks.append(chunk)
-
-                # Capture the resolved agent name
-                if resolved_agent_name is None:
-                    resolved_agent_name = chunk.agent
-
-                # Track different types of events for progress
-                if chunk.kind == "task" and chunk.text:
-                    task_updates.append(chunk.text)
-                    # Progress from 10 to 90 based on task updates
-                    progress = min(10 + len(task_updates) * 15, 90)
-                    await ctx.report_progress(progress, 100, f"Agent task: {chunk.text}")
-                    await ctx.info(f"Agent working: {chunk.text}")
-
-                elif chunk.kind == "status" and chunk.text:
-                    await ctx.report_progress(50, 100, f"Status: {chunk.text}")
-                    await ctx.info(f"Agent status: {chunk.text}")
-
-                elif chunk.kind in {"message", "artifact"}:
-                    if not has_received_content:
-                        await ctx.report_progress(80, 100, "Receiving response")
-                        has_received_content = True
-
-            if not chunks:
-                await ctx.warning("Agent returned no response chunks")
-                return ToolResult(
-                    content="No response received from agent",
-                    structured_content={
-                        "agent": agent or "unknown",
-                        "text": "",
-                        "events": [],
-                    },
-                )
-
-            final_agent = resolved_agent_name or agent or "unknown"
-            all_text = " ".join(c.text for c in chunks if c.text).strip()
-            elapsed_ms = int((time.time() - start_time) * 1000)
-
-            await ctx.debug(f"Received {len(chunks)} chunks from agent '{final_agent}'")
-            await ctx.report_progress(100, 100, "Response complete")
-
-            # Get event type counts for structured content
-            event_types = {}
-            for chunk in chunks:
-                event_types[chunk.kind] = event_types.get(chunk.kind, 0) + 1
-
-            return ToolResult(
-                content=all_text,  # What the LLM/user sees
-                structured_content={  # For programmatic access
-                    "agent": final_agent,
-                    "event_count": len(chunks),
-                    "event_types": event_types,
-                    "events": [c.to_dict() for c in chunks],
-                },
-                meta={  # Runtime metadata
-                    "execution_time_ms": elapsed_ms,
-                    "chunk_count": len(chunks),
-                    "task_updates": len(task_updates),
-                    "requested_agent": agent,
-                    "requested_skill": skill,
-                },
-            )
-
-        except Exception as exc:
-            await ctx.error(f"A2A agent error: {exc}")
-            agent_name = agent or "unknown agent"
-            raise ToolError(f"Failed to communicate with agent '{agent_name}': {exc}") from exc
-
-    async def _discover_agent_components(agent_name: str, ctx: Context) -> tuple[list[str], list[str]]:
-        await ctx.debug(f"Discovering components for agent '{agent_name}'")
-
-        # Check session cache first
-        cache_key = f"agent_card_{agent_name}"
-        cached_card = await ctx.get_state(cache_key)
-
-        if cached_card:
-            await ctx.debug(f"Using cached agent card for '{agent_name}'")
-            card = cached_card
-        else:
-            try:
-                card = await bridge.get_agent_card(agent_name)
-                # Cache for this session
-                await ctx.set_state(cache_key, card)
-                await ctx.debug(f"Cached agent card for '{agent_name}'")
-            except Exception as exc:
-                await ctx.warning(f"Failed to fetch agent card for '{agent_name}': {exc}")
-                return [], []
-
-        tool_defs, prompt_defs = _extract_component_defs(card)
-
-        await ctx.debug(f"Found {len(tool_defs)} tool definitions and {len(prompt_defs)} prompt definitions")
-
-        if not tool_defs and not prompt_defs:
-            return [], []
-
-        new_tools: list[str] = []
-        new_prompts: list[str] = []
-
-        async with registration_lock:
-            for tool_def in tool_defs:
-                tool_name = _read_field(tool_def, "name", "tool_name", "toolName", "id")
-                if not tool_name:
-                    continue
-                key = (agent_name, tool_name)
-                if key in tool_registry:
-                    continue
-                description = _read_field(tool_def, "description", "summary", "title")
-                arguments = _read_field(tool_def, "arguments", "args")
-                schema = _read_field(tool_def, "input_schema", "inputSchema", "schema", "parameters")
-                params = _parameters_from_arguments(arguments) or _parameters_from_schema(schema)
-                if not params:
-                    params = [
-                        inspect.Parameter(
-                            "payload",
-                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                            default=None,
-                            annotation=dict[str, Any],
-                        )
-                    ]
-                registered_name = _resolve_component_name(tool_name, agent_name, registered_tool_names)
-                tool_fn = _build_tool_function(
-                    agent_name=agent_name,
-                    tool_name=tool_name,
-                    registered_name=registered_name,
-                    description=description,
-                    parameters=params,
-                )
-                try:
-                    mcp.add_tool(tool_fn)
-                except Exception as exc:
-                    await ctx.warning(
-                        f"Failed to register tool '{registered_name}' from agent '{agent_name}': {exc}"
-                    )
-                    continue
-                registered_tool_names.add(registered_name)
-                tool_registry[key] = registered_name
-                new_tools.append(registered_name)
-
-            for prompt_def in prompt_defs:
-                prompt_name = _read_field(prompt_def, "name", "prompt_name", "promptName", "id")
-                if not prompt_name:
-                    continue
-                key = (agent_name, prompt_name)
-                if key in prompt_registry:
-                    continue
-                description = _read_field(prompt_def, "description", "summary", "title")
-                arguments = _read_field(prompt_def, "arguments", "args")
-                schema = _read_field(prompt_def, "input_schema", "inputSchema", "schema", "parameters")
-                params = _parameters_from_arguments(arguments) or _parameters_from_schema(schema)
-                registered_name = _resolve_component_name(prompt_name, agent_name, registered_prompt_names)
-                prompt_fn = _build_prompt_function(
-                    agent_name=agent_name,
-                    prompt_name=prompt_name,
-                    registered_name=registered_name,
-                    description=description,
-                    prompt_def=prompt_def,
-                    parameters=params,
-                )
-                try:
-                    mcp.add_prompt(prompt_fn)
-                except Exception as exc:
-                    await ctx.warning(
-                        f"Failed to register prompt '{registered_name}' from agent '{agent_name}': {exc}"
-                    )
-                    continue
-                registered_prompt_names.add(registered_name)
-                prompt_registry[key] = registered_name
-                new_prompts.append(registered_name)
-
-        return new_tools, new_prompts
-
-    @mcp.tool
-    async def a2a_send(
-        message: str,
-        agent: str | None = None,
-        skill: str | None = None,
-        continue_conversation: bool = False,
-        metadata: dict[str, Any] | None = None,
-        configuration: dict[str, Any] | None = None,
+        target: str | None = None,
+        context_id: str | None = None,
         ctx: Context = CurrentContext(),
-    ) -> ToolResult:
-        """Route a message to an A2A agent and return its response.
+    ):
+        """Send a message to an A2A agent and stream the response.
 
-        Uses streaming internally to keep the connection alive during long-running
-        operations, while still returning the final aggregated result.
+        This is the primary tool for interacting with A2A agents. Responses
+        stream in real-time so you can see progress as the agent works.
 
         Args:
             message: The message to send to the agent
-            agent: Optional agent name to route to
-            skill: Optional skill name for routing
-            continue_conversation: If True, maintains conversation history across calls
-            metadata: Optional metadata to include
-            configuration: Optional configuration for the A2A request
-            ctx: MCP context (injected automatically)
-
-        Returns:
-            Dictionary with agent response including text and events
+            target: Optional agent name to route to (auto-routes if not specified)
+            context_id: Optional context ID for conversation continuity (reuse to continue a conversation)
         """
+        task_id = str(uuid4())
+        effective_context_id = context_id or task_id
+        tracker = TaskTracker(task_id=task_id, context_id=effective_context_id)
+
+        # Build hierarchy tracker for sub-agent visibility
+        agent_hierarchy = AgentHierarchy(root=target or "auto")
+
+        async with task_lock:
+            task_trackers[task_id] = tracker
+
         # Handle conversation continuity
-        conversation_key = f"conversation_{agent or 'default'}"
-        message_to_send = message
-
-        if continue_conversation:
-            history = await ctx.get_state(conversation_key) or []
+        metadata: dict[str, Any] = {}
+        if context_id and context_id in conversation_contexts:
+            history = conversation_contexts[context_id]
             if history:
-                await ctx.debug(f"Continuing conversation with {len(history)} previous turns")
-                # Add conversation context to metadata
-                if metadata is None:
-                    metadata = {}
                 metadata["conversation_history"] = history[-10:]  # Last 10 turns
+                await ctx.debug(f"Continuing conversation with {len(history)} previous turns")
 
-        response = await _route_message(
-            message_to_send,
-            ctx=ctx,
-            agent=agent,
-            skill=skill,
-            metadata=metadata,
-            configuration=configuration,
-        )
+        try:
+            async for chunk in bridge.stream(
+                message,
+                ctx=ctx,
+                agent=target,
+                metadata=metadata if metadata else None,
+            ):
+                # Update task tracker
+                from .models import AgentEvent
+                event = AgentEvent(
+                    kind=chunk.kind,
+                    text=chunk.text,
+                    task_id=chunk.task_id or task_id,
+                    context_id=chunk.context_id or effective_context_id,
+                    progress=chunk.progress,
+                    branch=chunk.branch,
+                    author=chunk.author,
+                    state=chunk.state,
+                    is_final=chunk.is_final,
+                    requires_confirmation=chunk.requires_confirmation,
+                    tool_call=chunk.tool_call,
+                )
+                tracker.add_event(event)
 
-        # Update conversation history if enabled
-        if continue_conversation:
-            history = await ctx.get_state(conversation_key) or []
-            history.append({"role": "user", "content": message})
-            # ToolResult stores content as a string or content blocks
-            response_text = response.content if isinstance(response.content, str) else str(response.content)
-            history.append({"role": "agent", "content": response_text})
-            # Keep last 20 turns (10 exchanges)
-            await ctx.set_state(conversation_key, history[-20:])
-            await ctx.debug(f"Updated conversation history: {len(history)} total turns")
+                # Build dynamic hierarchy from branch info (sub-agent visibility)
+                if chunk.branch:
+                    parts = chunk.branch.split(".")
+                    for i, part in enumerate(parts):
+                        parent = parts[i - 1] if i > 0 else None
+                        if part not in agent_hierarchy.agents:
+                            agent_hierarchy.add_agent(part, parent=parent)
 
-        return response
+                # Handle tool confirmation if enabled
+                if config.enable_tool_confirmation and chunk.requires_confirmation:
+                    if chunk.tool_call:
+                        confirmed = await _handle_tool_confirmation(
+                            ctx, chunk.tool_call, chunk.agent, config
+                        )
+                        if not confirmed:
+                            await ctx.warning("Operation cancelled by user")
+                            tracker.transition(TaskState.canceled, "User cancelled")
+                            break
 
-    @mcp.tool
-    async def a2a_stream(
-        message: str,
-        agent: str | None = None,
-        skill: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        configuration: dict[str, Any] | None = None,
-        ctx: Context = CurrentContext(),
-    ):
-        """Stream a response from an A2A agent as text.
+                # Handle input required (elicitation)
+                if config.enable_elicitation and tracker.state == TaskState.input_required:
+                    user_input = await _handle_elicitation(
+                        ctx, tracker.message or "Agent needs input", config
+                    )
+                    if user_input:
+                        await ctx.info("Continuing with user input")
 
-        Progress and status updates are sent through context logging and progress reporting.
-        Only actual agent text responses are yielded as streaming content.
+                # Progress and status go to side-channel
+                if chunk.kind in {"status", "task"}:
+                    if chunk.text:
+                        branch_info = f" [{chunk.branch}]" if chunk.branch else ""
+                        await ctx.info(f"{branch_info} {chunk.text}")
+                    if chunk.progress:
+                        await ctx.report_progress(int(chunk.progress), 100)
+
+                # Yield actual content
+                if chunk.kind in {"message", "artifact"} and chunk.text:
+                    yield chunk.text
+
+        finally:
+            if not tracker.state.is_terminal:
+                tracker.transition(TaskState.completed)
+
+            # Store conversation history for continuity
+            if effective_context_id:
+                if effective_context_id not in conversation_contexts:
+                    conversation_contexts[effective_context_id] = []
+                # Collect all text from this interaction
+                all_text = " ".join(
+                    e.text for e in tracker.events if e.text and e.kind in {"message", "artifact"}
+                ).strip()
+                if all_text:
+                    conversation_contexts[effective_context_id].append(
+                        {"role": "user", "content": message}
+                    )
+                    conversation_contexts[effective_context_id].append(
+                        {"role": "agent", "content": all_text}
+                    )
+                    # Keep last 20 turns
+                    conversation_contexts[effective_context_id] = \
+                        conversation_contexts[effective_context_id][-20:]
+
+            # Store hierarchy in tracker for later inspection
+            if len(agent_hierarchy.agents) > 0:
+                tracker.hierarchy = agent_hierarchy
+
+    @mcp.tool(name="agents")
+    def agents_tool() -> list[dict[str, Any]]:
+        """List available A2A agents.
+
+        Returns information about each agent including name, description,
+        and available skills/capabilities.
         """
-
-        await ctx.info("Starting A2A streaming response.")
-        index = 0
-        total_chunks = 0
-
-        async for chunk in bridge.stream(
-            message,
-            ctx=ctx,
-            agent=agent,
-            skill=skill,
-            metadata=metadata,
-            configuration=configuration,
-        ):
-            total_chunks += 1
-
-            # Progress and status go to side-channel
-            if chunk.kind in {"status", "task"}:
-                if chunk.text:
-                    await ctx.info(f"[{chunk.kind.upper()}] {chunk.text}")
-                await ctx.report_progress(index, index + 1, chunk.kind)
-
-            # Only yield actual text content that should be part of the response
-            if chunk.kind in {"message", "artifact"} and chunk.text:
-                yield chunk.text
-
-            index += 1
-
-        await ctx.report_progress(total_chunks, total_chunks, "A2A streaming completed")
-
-    @mcp.tool
-    def a2a_list_agents() -> list[dict[str, Any]]:
-        """List known A2A agents."""
-
         return [agent.to_dict() for agent in active_router.list_agents()]
 
-    _mark_tool("a2a_send")
-    _mark_tool("a2a_stream")
-    _mark_tool("a2a_list_agents")
+    @mcp.tool(name="task")
+    async def task_tool(
+        id: str,
+        ctx: Context = CurrentContext(),
+    ) -> dict[str, Any]:
+        """Query the state of a task.
 
-    def _register_agent_tool(descriptor: AgentDescriptor) -> None:
-        agent_name = descriptor.name
-        description = descriptor.description or f"Send a message to the '{agent_name}' agent."
+        Use this to check on the status of a previous interaction,
+        see progress, retrieve results, or view the agent hierarchy that handled it.
 
-        async def agent_tool(
-            message: str,
-            metadata: dict[str, Any] | None = None,
-            configuration: dict[str, Any] | None = None,
-            ctx: Context = CurrentContext(),
-        ) -> ToolResult:
-            response_task = asyncio.create_task(
-                _route_message(
-                    message,
-                    ctx=ctx,
-                    agent=agent_name,
-                    metadata=metadata,
-                    configuration=configuration,
-                )
-            )
-            discovery_task = asyncio.create_task(_discover_agent_components(agent_name, ctx))
-            response = await response_task
-            new_tools, new_prompts = await discovery_task
+        Args:
+            id: The task ID to query
+        """
+        async with task_lock:
+            tracker = task_trackers.get(id)
+            if tracker:
+                result = tracker.to_dict()
+                # Include hierarchy if available
+                if hasattr(tracker, 'hierarchy') and tracker.hierarchy:
+                    result["hierarchy"] = tracker.hierarchy.to_dict()
+                return result
+        return {"error": f"Task {id} not found", "task_id": id}
 
-            # Send discovery notifications through proper channel - don't pollute response text
-            if new_tools:
-                await ctx.info(f"Discovered new tools: {', '.join(new_tools)}")
-            if new_prompts:
-                await ctx.info(f"Discovered new prompts: {', '.join(new_prompts)}")
+    @mcp.tool(name="inspect")
+    async def inspect_tool(
+        name: str,
+        ctx: Context = CurrentContext(),
+    ) -> dict[str, Any]:
+        """Inspect an agent's internal structure.
 
-            # Return clean agent response - NO text pollution
-            return response
+        Shows the sub-agents, tools, and capabilities of a multi-agent system.
+        Useful for understanding how tasks are delegated internally.
 
-        agent_tool.__name__ = agent_name
-        agent_tool.__doc__ = description
-        if agent_name in registered_tool_names:
-            raise RuntimeError(
-                f"Cannot register agent tool '{agent_name}': tool name already in use."
-            )
-        mcp.add_tool(agent_tool)
-        registered_tool_names.add(agent_name)
+        Args:
+            name: The agent name to inspect
+        """
+        try:
+            card = await provider.get_agent_card(name)
+            if not card:
+                return {"error": f"Agent '{name}' not found", "agent": name}
 
-    for agent_descriptor in active_router.list_agents():
-        _register_agent_tool(agent_descriptor)
+            hierarchy = _build_agent_hierarchy(name, card)
+            return hierarchy.to_dict()
+
+        except Exception as exc:
+            await ctx.error(f"Failed to inspect agent: {exc}")
+            return {"error": str(exc), "agent": name}
+
+    # =========================================================================
+    # Background Task Support (SEP-1686)
+    # =========================================================================
+    #
+    # For long-running operations, we provide a background execution mode.
+    # This uses FastMCP's task=True decorator which runs the tool in the
+    # background and allows progress tracking via the `task` tool.
+    #
+    # NOTE: This is separate from `agent` because FastMCP's background tasks
+    # have a fundamentally different execution model (non-streaming, returns
+    # task ID immediately).
+    # =========================================================================
+
+    if config.enable_background_tasks:
+        try:
+            from fastmcp.dependencies import Progress
+            from fastmcp.tools.tool import ToolResult
+
+            @mcp.tool(name="agent_background", task=True)
+            async def agent_background_tool(
+                message: str,
+                target: str | None = None,
+                progress: Progress = Progress(),
+            ) -> ToolResult:
+                """Send a message to an A2A agent as a background task.
+
+                Use this for long-running operations. Returns immediately with a
+                task ID that you can query with the `task` tool.
+
+                Args:
+                    message: The message to send to the agent
+                    target: Optional agent name to route to
+                """
+                from fastmcp.server.dependencies import get_context
+                bg_ctx = get_context()
+
+                await progress.set_total(100)
+                await progress.set_message("Connecting to agent...")
+
+                task_id = str(uuid4())
+                tracker = TaskTracker(task_id=task_id)
+
+                async with task_lock:
+                    task_trackers[task_id] = tracker
+
+                chunks = []
+                index = 0
+
+                try:
+                    async for chunk in bridge.stream(
+                        message,
+                        ctx=bg_ctx,
+                        agent=target,
+                    ):
+                        chunks.append(chunk)
+                        index += 1
+
+                        # Update progress
+                        pct = min(10 + index * 5, 90)
+                        await progress.set_progress(pct)
+
+                        if chunk.text:
+                            preview = chunk.text[:50] + "..." if len(chunk.text) > 50 else chunk.text
+                            await progress.set_message(f"Processing: {preview}")
+
+                        # Track events
+                        from .models import AgentEvent
+                        event = AgentEvent(
+                            kind=chunk.kind,
+                            text=chunk.text,
+                            task_id=task_id,
+                            branch=chunk.branch,
+                            state=chunk.state,
+                        )
+                        tracker.add_event(event)
+
+                    await progress.set_progress(100)
+                    await progress.set_message("Complete")
+
+                    # Finalize
+                    if not tracker.state.is_terminal:
+                        tracker.transition(TaskState.completed)
+
+                    all_text = " ".join(c.text for c in chunks if c.text).strip()
+
+                    return ToolResult(
+                        content=all_text,
+                        structured_content={
+                            "task_id": task_id,
+                            "agent": target or "auto",
+                            "state": tracker.state.value,
+                            "event_count": len(chunks),
+                        },
+                    )
+
+                except Exception as exc:
+                    tracker.transition(TaskState.failed, str(exc))
+                    raise
+
+        except ImportError:
+            # Background tasks not available (missing fastmcp[tasks])
+            pass
+
+    # =========================================================================
+    # Resources for Agent Discovery
+    # =========================================================================
 
     @mcp.resource("a2a://agents")
-    async def a2a_agents_resource(ctx: Context = CurrentContext()) -> str:
-        """Provide agent catalog data to MCP clients."""
-
+    def agents_catalog_resource() -> str:
+        """Catalog of available A2A agents."""
         return json.dumps({
-            "agents": [agent.to_dict() for agent in active_router.list_agents()],
-            "session_id": getattr(ctx, "session_id", None),
-        })
-
-    @mcp.resource("a2a://agents/{agent}")
-    async def a2a_agent_resource(agent: str, ctx: Context = CurrentContext()) -> str:
-        descriptor = active_router.describe(agent)
-        return json.dumps({
-            "agent": descriptor.to_dict(),
-            "session_id": getattr(ctx, "session_id", None),
-        })
-
-    @mcp.resource("a2a://agents/{agent}/card")
-    async def a2a_agent_card_resource(agent: str) -> str:
-        card = await bridge.get_agent_card(agent)
-        if card is None:
-            return json.dumps({"agent": agent, "card": None})
-        if hasattr(card, "model_dump"):
-            return json.dumps({"agent": agent, "card": card.model_dump()})
-        if hasattr(card, "dict"):
-            return json.dumps({"agent": agent, "card": card.dict()})
-        return json.dumps({"agent": agent, "card": card})
-
-    @mcp.prompt
-    async def a2a_routing_prompt(goal: str, ctx: Context = CurrentContext()) -> str:
-        agent_lines = []
-        for agent in active_router.list_agents():
-            skills = ", ".join(agent.skills) if agent.skills else "(no skills listed)"
-            agent_lines.append(f"- {agent.name}: {skills}")
-        agent_block = "\n".join(agent_lines) if agent_lines else "- No agents registered"
-        session = getattr(ctx, "session_id", None)
-        return (
-            "You are an MCP client that can route work to A2A agents.\n"
-            f"Goal: {goal}\n\n"
-            "Available agents:\n"
-            f"{agent_block}\n\n"
-            "Pick the best agent and call the tool named after that agent with the goal as the message.\n"
-            "Use `a2a_send` only if you need manual routing or debugging.\n"
-            f"Session: {session}\n"
-        )
-
-    _mark_prompt("a2a_routing_prompt")
+            "agents": [agent.to_dict() for agent in active_router.list_agents()]
+        }, indent=2)
 
     return mcp
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+async def _handle_tool_confirmation(
+    ctx: Context,
+    tool_call: dict[str, Any],
+    agent: str | None,
+    config: ServerConfig,
+) -> bool:
+    """Handle tool confirmation via elicitation."""
+    if not config.enable_elicitation:
+        return True  # Auto-confirm if elicitation disabled
+
+    try:
+        tool_name = tool_call.get("name", "unknown")
+        arguments = tool_call.get("arguments", {})
+
+        message = (
+            f"Agent '{agent or 'unknown'}' wants to execute tool '{tool_name}' "
+            f"with arguments: {json.dumps(arguments, indent=2)}\n\n"
+            "Approve this action?"
+        )
+
+        result = await ctx.elicit(message, response_type=None)
+        return result.action == "accept"
+
+    except Exception as exc:
+        await ctx.warning(f"Elicitation failed, auto-approving: {exc}")
+        return True
+
+
+async def _handle_elicitation(
+    ctx: Context,
+    message: str,
+    config: ServerConfig,
+) -> str | None:
+    """Handle elicitation request from agent."""
+    if not config.enable_elicitation:
+        return None
+
+    try:
+        result = await ctx.elicit(message, response_type=str)
+        if result.action == "accept":
+            return result.data
+        return None
+
+    except Exception as exc:
+        await ctx.warning(f"Elicitation failed: {exc}")
+        return None
+
+
+def _build_agent_hierarchy(root_name: str, card: Any) -> AgentHierarchy:
+    """Build agent hierarchy from agent card."""
+    hierarchy = AgentHierarchy(root=root_name)
+
+    # Extract skills and infer sub-agents
+    if hasattr(card, "skills"):
+        skills = getattr(card, "skills", []) or []
+        for skill in skills:
+            skill_name = getattr(skill, "name", None) or skill.get("name") if isinstance(skill, dict) else str(skill)
+            skill_desc = getattr(skill, "description", None) or (skill.get("description") if isinstance(skill, dict) else None)
+            if skill_name:
+                hierarchy.add_agent(
+                    skill_name,
+                    description=skill_desc,
+                    parent=root_name,
+                )
+
+    # Check for explicit sub-agents in metadata
+    metadata = None
+    if hasattr(card, "metadata"):
+        metadata = getattr(card, "metadata", None)
+    elif isinstance(card, dict):
+        metadata = card.get("metadata")
+
+    if metadata and isinstance(metadata, dict):
+        sub_agents = metadata.get("sub_agents", [])
+        for sub in sub_agents:
+            if isinstance(sub, dict):
+                hierarchy.add_agent(
+                    sub.get("name", "unknown"),
+                    description=sub.get("description"),
+                    skills=sub.get("skills", []),
+                    parent=root_name,
+                )
+
+    return hierarchy

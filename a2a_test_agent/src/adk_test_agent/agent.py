@@ -6,6 +6,15 @@ to validate the MCP-A2A bridge functionality, including:
 - Various tool types (synchronous, async, data processing)
 - Complex workflows and context preservation
 - Different response patterns for testing streaming and incremental updates
+
+NEW: Enhanced for testing all 7 AgentMCP features:
+1. Provider Architecture - MCP tool definitions in agent card
+2. Background Tasks (SEP-1686) - Long-running async tools
+3. User Elicitation - Tools requiring user input
+4. Sampling - Complex routing scenarios
+5. Task State Machine - Tools producing different states
+6. Sub-Agent Visibility - Branch tracking metadata
+7. Tool Confirmation Flow - Dangerous operations requiring approval
 """
 
 from __future__ import annotations
@@ -14,8 +23,21 @@ import asyncio
 import os
 import random
 import re
+import time
 from datetime import datetime
 from typing import Any
+
+
+# =============================================================================
+# Task State Constants (for state machine testing)
+# =============================================================================
+
+TASK_STATE_SUBMITTED = "submitted"
+TASK_STATE_WORKING = "working"
+TASK_STATE_INPUT_REQUIRED = "input-required"
+TASK_STATE_COMPLETED = "completed"
+TASK_STATE_FAILED = "failed"
+TASK_STATE_CANCELED = "canceled"
 
 
 def build_root_agent() -> Any:
@@ -253,10 +275,441 @@ def build_root_agent() -> Any:
         tools=[search_info, get_random_fact, fetch_data],
     )
 
+    # ========== Interactive Agent (for Elicitation & Confirmation testing) ==========
+    def request_user_preference(
+        question: str,
+        options: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Request a preference from the user. This simulates elicitation.
+
+        The MCP client should intercept this and prompt the user for input.
+
+        Args:
+            question: The question to ask the user
+            options: Optional list of choices to present
+
+        Returns:
+            A response indicating user input is required
+        """
+        return {
+            "status": TASK_STATE_INPUT_REQUIRED,
+            "requires_input": True,
+            "question": question,
+            "options": options or [],
+            "message": f"User input required: {question}",
+        }
+
+    def confirm_action(
+        action: str,
+        details: str | None = None,
+    ) -> dict[str, Any]:
+        """Request confirmation before proceeding with an action.
+
+        This simulates the tool confirmation flow where the MCP client
+        should prompt the user to approve the action before execution.
+
+        Args:
+            action: The action that requires confirmation
+            details: Additional details about what will happen
+
+        Returns:
+            A response indicating confirmation is required
+        """
+        return {
+            "status": TASK_STATE_INPUT_REQUIRED,
+            "requires_confirmation": True,
+            "action": action,
+            "details": details,
+            "message": f"Confirmation required for: {action}",
+        }
+
+    def dangerous_operation(
+        operation: str,
+        target: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Perform a dangerous operation that SHOULD require confirmation.
+
+        Operations like 'delete', 'modify', 'execute' on sensitive targets
+        should trigger the tool confirmation flow in the MCP client.
+
+        Args:
+            operation: The operation type (delete, modify, execute, etc.)
+            target: The target of the operation
+            force: Skip confirmation (for testing bypass scenarios)
+
+        Returns:
+            Result of the operation
+        """
+        # This metadata signals to the bridge that confirmation is needed
+        result = {
+            "operation": operation,
+            "target": target,
+            "requires_confirmation": not force,
+            "dangerous": True,
+        }
+
+        if force:
+            result["status"] = "executed"
+            result["message"] = f"Force-executed {operation} on {target}"
+        else:
+            result["status"] = TASK_STATE_INPUT_REQUIRED
+            result["message"] = f"Awaiting confirmation to {operation} on {target}"
+
+        return result
+
+    def interactive_wizard(
+        task: str,
+        step: int = 1,
+    ) -> dict[str, Any]:
+        """Run an interactive wizard that requires multiple user inputs.
+
+        This tests the multi-step elicitation flow where the agent
+        needs to gather several pieces of information from the user.
+
+        Args:
+            task: The task to configure
+            step: Current step in the wizard (1-3)
+
+        Returns:
+            Current step info or completion status
+        """
+        steps = {
+            1: {
+                "status": TASK_STATE_INPUT_REQUIRED,
+                "step": 1,
+                "total_steps": 3,
+                "question": f"What type of {task} do you want to create?",
+                "options": ["simple", "advanced", "custom"],
+                "next_action": "Call interactive_wizard with step=2",
+            },
+            2: {
+                "status": TASK_STATE_INPUT_REQUIRED,
+                "step": 2,
+                "total_steps": 3,
+                "question": f"Enter a name for your {task}:",
+                "options": None,
+                "next_action": "Call interactive_wizard with step=3",
+            },
+            3: {
+                "status": TASK_STATE_INPUT_REQUIRED,
+                "step": 3,
+                "total_steps": 3,
+                "question": f"Confirm creation of {task}?",
+                "options": ["yes", "no"],
+                "requires_confirmation": True,
+                "next_action": "Complete wizard",
+            },
+        }
+
+        if step > 3:
+            return {
+                "status": TASK_STATE_COMPLETED,
+                "message": f"Wizard completed! {task} has been created.",
+                "step": "complete",
+            }
+
+        return steps.get(step, steps[1])
+
+    interactive_agent = Agent(
+        name="Interactive",
+        description="Handles user interactions, confirmations, and multi-step wizards. Tests elicitation and tool confirmation flows.",
+        model=model,
+        instruction="""
+            You are an interactive agent that handles user-facing workflows.
+            You specialize in:
+            - Gathering user preferences through questions
+            - Confirming dangerous or important actions before execution
+            - Running multi-step wizards that require sequential user input
+
+            When a user wants to do something that requires their input or confirmation,
+            use the appropriate tool to request it. Be clear about what you're asking.
+
+            IMPORTANT: For dangerous operations (delete, modify system settings, etc.),
+            ALWAYS use confirm_action or dangerous_operation to get user approval first.
+        """,
+        tools=[
+            request_user_preference,
+            confirm_action,
+            dangerous_operation,
+            interactive_wizard,
+        ],
+    )
+
+    # ========== Workflow Agent (for Task State Machine & Background Tasks) ==========
+    async def long_running_task(
+        duration_seconds: float = 5.0,
+        steps: int = 10,
+    ) -> dict[str, Any]:
+        """Execute a long-running task with progress updates.
+
+        This tests background task handling and progress tracking.
+        The task runs for the specified duration, emitting progress updates.
+
+        Args:
+            duration_seconds: Total duration of the task
+            steps: Number of progress steps to report
+
+        Returns:
+            Final result with execution statistics
+        """
+        start_time = time.time()
+        results = []
+        step_duration = duration_seconds / steps
+
+        for i in range(steps):
+            await asyncio.sleep(step_duration)
+            progress = ((i + 1) / steps) * 100
+            results.append({
+                "step": i + 1,
+                "progress": progress,
+                "timestamp": datetime.now().isoformat(),
+                "status": TASK_STATE_WORKING,
+            })
+
+        elapsed = time.time() - start_time
+
+        return {
+            "status": TASK_STATE_COMPLETED,
+            "total_steps": steps,
+            "duration_seconds": elapsed,
+            "results": results,
+            "message": f"Long-running task completed in {elapsed:.2f}s",
+        }
+
+    async def batch_processor(
+        items: list[str],
+        batch_size: int = 5,
+        delay_per_batch: float = 0.5,
+    ) -> dict[str, Any]:
+        """Process items in batches with progress updates.
+
+        Tests streaming progress updates during batch processing.
+
+        Args:
+            items: List of items to process
+            batch_size: Number of items per batch
+            delay_per_batch: Simulated processing time per batch
+
+        Returns:
+            Processing results with batch-level details
+        """
+        batches = []
+        total = len(items)
+        processed = 0
+
+        for i in range(0, total, batch_size):
+            batch = items[i:i + batch_size]
+            await asyncio.sleep(delay_per_batch)
+            processed += len(batch)
+
+            batches.append({
+                "batch_index": len(batches),
+                "items": batch,
+                "processed_count": processed,
+                "progress": (processed / total) * 100,
+                "status": TASK_STATE_WORKING,
+            })
+
+        return {
+            "status": TASK_STATE_COMPLETED,
+            "total_items": total,
+            "total_batches": len(batches),
+            "batches": batches,
+            "message": f"Processed {total} items in {len(batches)} batches",
+        }
+
+    def simulate_failure(
+        failure_type: str = "error",
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        """Simulate various failure scenarios for testing error handling.
+
+        Args:
+            failure_type: Type of failure (error, timeout, canceled, rejected)
+            message: Custom error message
+
+        Returns:
+            Failure response with appropriate state
+        """
+        failure_states = {
+            "error": TASK_STATE_FAILED,
+            "timeout": TASK_STATE_FAILED,
+            "canceled": TASK_STATE_CANCELED,
+            "rejected": "rejected",
+            "auth_required": "auth-required",
+        }
+
+        state = failure_states.get(failure_type, TASK_STATE_FAILED)
+
+        return {
+            "status": state,
+            "failure_type": failure_type,
+            "message": message or f"Simulated {failure_type} failure",
+            "recoverable": failure_type in {"timeout", "canceled"},
+        }
+
+    def state_machine_demo(
+        target_state: str = "working",
+    ) -> dict[str, Any]:
+        """Demonstrate task state machine transitions.
+
+        This tool explicitly sets the task to a specific state,
+        useful for testing state machine alignment.
+
+        Args:
+            target_state: Target state (submitted, working, completed, failed, etc.)
+
+        Returns:
+            Response with the target state
+        """
+        valid_states = {
+            "submitted": TASK_STATE_SUBMITTED,
+            "working": TASK_STATE_WORKING,
+            "input_required": TASK_STATE_INPUT_REQUIRED,
+            "completed": TASK_STATE_COMPLETED,
+            "failed": TASK_STATE_FAILED,
+            "canceled": TASK_STATE_CANCELED,
+        }
+
+        state = valid_states.get(target_state.lower(), TASK_STATE_WORKING)
+
+        return {
+            "status": state,
+            "target_state": target_state,
+            "message": f"Task state set to: {state}",
+            "is_terminal": state in {TASK_STATE_COMPLETED, TASK_STATE_FAILED, TASK_STATE_CANCELED},
+        }
+
+    async def progressive_task(
+        phases: int = 3,
+        phase_duration: float = 1.0,
+    ) -> dict[str, Any]:
+        """Execute a task with distinct phases and state transitions.
+
+        Tests the full task lifecycle: submitted -> working -> completed
+
+        Args:
+            phases: Number of work phases
+            phase_duration: Duration of each phase in seconds
+
+        Returns:
+            Final result with phase history
+        """
+        history = [{"state": TASK_STATE_SUBMITTED, "timestamp": datetime.now().isoformat()}]
+
+        # Transition to working
+        history.append({"state": TASK_STATE_WORKING, "timestamp": datetime.now().isoformat()})
+
+        for i in range(phases):
+            await asyncio.sleep(phase_duration)
+            history.append({
+                "state": TASK_STATE_WORKING,
+                "phase": i + 1,
+                "progress": ((i + 1) / phases) * 100,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+        # Transition to completed
+        history.append({"state": TASK_STATE_COMPLETED, "timestamp": datetime.now().isoformat()})
+
+        return {
+            "status": TASK_STATE_COMPLETED,
+            "phases_completed": phases,
+            "state_history": history,
+            "message": f"Progressive task completed {phases} phases",
+        }
+
+    workflow_agent = Agent(
+        name="Workflow",
+        description="Handles long-running tasks, batch processing, and state machine demonstrations. Tests background tasks and task state alignment.",
+        model=model,
+        instruction="""
+            You are a workflow orchestration agent that handles:
+            - Long-running background tasks with progress tracking
+            - Batch processing with incremental updates
+            - Task state machine demonstrations
+            - Failure simulation for testing error handling
+
+            When executing long-running operations, provide clear progress updates.
+            Use the appropriate tools to demonstrate different task states and transitions.
+        """,
+        tools=[
+            long_running_task,
+            batch_processor,
+            simulate_failure,
+            state_machine_demo,
+            progressive_task,
+        ],
+    )
+
+    # ========== SubAgent Visibility Demo Agent ==========
+    def announce_branch(
+        action: str,
+        details: str | None = None,
+    ) -> dict[str, str]:
+        """Announce the current agent's branch in the hierarchy.
+
+        This helps test sub-agent visibility by explicitly including
+        branch information in the response.
+
+        Args:
+            action: The action being performed
+            details: Additional details
+
+        Returns:
+            Response with branch metadata
+        """
+        return {
+            "action": action,
+            "details": details or "",
+            "agent": "BranchDemo",
+            "branch_hint": "root.BranchDemo",
+            "message": f"BranchDemo agent executing: {action}",
+        }
+
+    def delegate_to_sub(
+        task: str,
+        sub_agent: str = "level2",
+    ) -> dict[str, Any]:
+        """Simulate delegation to a deeper sub-agent.
+
+        Tests the visibility of nested agent hierarchies.
+
+        Args:
+            task: The task to delegate
+            sub_agent: Which sub-agent to delegate to
+
+        Returns:
+            Response simulating sub-agent execution
+        """
+        return {
+            "delegated_task": task,
+            "delegated_to": sub_agent,
+            "branch_hint": f"root.BranchDemo.{sub_agent}",
+            "simulated_response": f"Sub-agent {sub_agent} processed: {task}",
+            "hierarchy": ["root", "BranchDemo", sub_agent],
+        }
+
+    branch_demo_agent = Agent(
+        name="BranchDemo",
+        description="Demonstrates sub-agent visibility and branch tracking in multi-agent hierarchies.",
+        model=model,
+        instruction="""
+            You are a demonstration agent for sub-agent visibility features.
+            Your responses should help test the branch tracking system that shows
+            which agent in a hierarchy is currently processing.
+
+            Use announce_branch to show where you are in the hierarchy.
+            Use delegate_to_sub to simulate deeper delegation chains.
+        """,
+        tools=[announce_branch, delegate_to_sub],
+    )
+
     # ========== Root Orchestrator Agent ==========
     root_agent = Agent(
         name="TestAgentRoot",
-        description="Multi-capability test agent that orchestrates specialized subagents for calculations, data processing, text manipulation, and information retrieval.",
+        description="Multi-capability test agent that orchestrates specialized subagents for calculations, data processing, text manipulation, information retrieval, interactive workflows, background tasks, and sub-agent visibility demonstrations.",
         model=model,
         instruction="""
             You are a versatile orchestrator agent that coordinates multiple specialized subagents.
@@ -266,6 +719,9 @@ def build_root_agent() -> Any:
             - DataProcessor: For list/data manipulation, filtering, sorting, and batch processing
             - TextProcessor: For text transformations, analysis, and manipulation
             - InfoRetriever: For information lookup, facts, and data retrieval
+            - Interactive: For user confirmations, preferences, and multi-step wizards
+            - Workflow: For long-running tasks, batch processing, and state machine demos
+            - BranchDemo: For demonstrating sub-agent visibility and hierarchy tracking
 
             When a user makes a request:
             1. Analyze the request to understand what capability is needed
@@ -273,10 +729,25 @@ def build_root_agent() -> Any:
             3. If a request requires multiple capabilities, coordinate between agents
             4. Present results clearly to the user
 
+            IMPORTANT ROUTING GUIDELINES:
+            - For dangerous operations (delete, modify, execute) -> Interactive agent
+            - For anything requiring user input or confirmation -> Interactive agent
+            - For long-running or background tasks -> Workflow agent
+            - For testing states/failures/progress -> Workflow agent
+            - For sub-agent hierarchy demonstrations -> BranchDemo agent
+
             You can handle complex multi-step workflows by sequencing subagent calls.
             Always be helpful, accurate, and clear in your responses.
         """,
-        sub_agents=[calculator_agent, data_agent, text_agent, info_agent],
+        sub_agents=[
+            calculator_agent,
+            data_agent,
+            text_agent,
+            info_agent,
+            interactive_agent,
+            workflow_agent,
+            branch_demo_agent,
+        ],
     )
 
     return root_agent
