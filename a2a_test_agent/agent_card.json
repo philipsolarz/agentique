@@ -2,6 +2,7 @@
   "name": "TestAgentRoot",
   "description": "Multi-capability test agent that orchestrates specialized subagents for calculations, data processing, text manipulation, information retrieval, interactive workflows, background tasks, and sub-agent visibility demonstrations.",
   "version": "0.3.0",
+  "url": "http://a2a-test-agent:9000",
   "capabilities": {
     "streaming": true,
     "pushNotifications": false,
@@ -233,34 +234,50 @@
       }
     ]
   },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
   "skills": [
     {
+      "id": "calculation",
       "name": "calculation",
-      "description": "Perform arithmetic operations and statistical calculations"
+      "description": "Perform arithmetic operations and statistical calculations",
+      "tags": ["math", "statistics", "arithmetic"]
     },
     {
+      "id": "data_processing",
       "name": "data_processing",
-      "description": "Filter, sort, and analyze lists of data"
+      "description": "Filter, sort, and analyze lists of data",
+      "tags": ["data", "list", "processing"]
     },
     {
+      "id": "text_manipulation",
       "name": "text_manipulation",
-      "description": "Transform and analyze text"
+      "description": "Transform and analyze text",
+      "tags": ["text", "nlp", "transformation"]
     },
     {
+      "id": "information_retrieval",
       "name": "information_retrieval",
-      "description": "Search knowledge base and retrieve facts"
+      "description": "Search knowledge base and retrieve facts",
+      "tags": ["search", "retrieval", "facts"]
     },
     {
+      "id": "user_interaction",
       "name": "user_interaction",
-      "description": "Handle confirmations, preferences, and multi-step wizards"
+      "description": "Handle confirmations, preferences, and multi-step wizards",
+      "tags": ["interaction", "elicitation", "confirmation"]
     },
     {
+      "id": "workflow_orchestration",
       "name": "workflow_orchestration",
-      "description": "Execute long-running tasks and batch processing"
+      "description": "Execute long-running tasks and batch processing",
+      "tags": ["workflow", "background", "tasks"]
     },
     {
+      "id": "hierarchy_demo",
       "name": "hierarchy_demo",
-      "description": "Demonstrate sub-agent visibility and branch tracking"
+      "description": "Demonstrate sub-agent visibility and branch tracking",
+      "tags": ["hierarchy", "subagents", "visibility"]
     }
   ],
   "metadata": {

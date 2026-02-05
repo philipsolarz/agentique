@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import CurrentContext
+from fastmcp.tools.tool import ToolResult
 
 from .bridge import RouterBridge
 from .models import (

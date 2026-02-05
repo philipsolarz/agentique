@@ -15,12 +15,14 @@ Enhanced for testing AgentMCP features:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
 
 import uvicorn
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
+from a2a.types import AgentCard
 
 from .agent import build_root_agent
 
@@ -81,12 +83,20 @@ def build_app() -> object:
     # Build the A2A application
     logger.info(f"Creating A2A application at {protocol}://{host_for_card}:{port_for_card}")
 
+    provided_agent_card = None
+    if agent_card_path:
+        with open(agent_card_path, "r", encoding="utf-8") as handle:
+            agent_card_data = json.load(handle)
+        # Keep the card URL aligned to the externally advertised base URL.
+        agent_card_data["url"] = base_url or f"{protocol}://{host_for_card}:{port_for_card}"
+        provided_agent_card = AgentCard(**agent_card_data)
+
     app = to_a2a(
         root_agent,
         host=host_for_card,
         port=port_for_card,
         protocol=protocol,
-        agent_card=agent_card_path if agent_card_path else None,
+        agent_card=provided_agent_card,
     )
 
     logger.info("A2A application created successfully")
