@@ -1,141 +1,204 @@
 # Agentique
 
-Bridge the Model Context Protocol (MCP) with the Agent2Agent (A2A) protocol.
+**Bridge any agent ecosystem to MCP.**
 
-## Overview
+Agentique is a Python framework that exposes any agent ecosystem as a first-class MCP server. It translates MCP's tool/resource/prompt primitives into agent protocol operations, letting any MCP client — Claude, Cursor, ChatGPT, or custom hosts — seamlessly interact with remote agents regardless of their underlying protocol.
 
-Agentique runs a FastMCP 3.0 server that routes MCP tool calls to A2A agents. The server is intentionally narrow in scope:
+## Architecture
 
-- MCP handles protocol surface (tools, resources, prompts, streaming).
-- An `AgentRouter` selects the appropriate A2A agent.
-- A lightweight A2A bridge sends messages and normalizes responses.
-
-## Quick start
-
-```bash
-export AGENTIQUE_AGENTS="echo=http://localhost:9999|general"
-python -m agentique
+```
+┌─────────────────────────────────────────────────────────┐
+│  MCP Clients (Claude, Cursor, custom)                   │
+└────────────────────────┬────────────────────────────────┘
+                         │  MCP Protocol
+┌────────────────────────▼────────────────────────────────┐
+│  Protocol Layer — FastMCP 3.0 Server                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │  agent   │ │  agents  │ │   task   │ │  inspect  │  │
+│  └────┬─────┘ └──────────┘ └──────────┘ └───────────┘  │
+│       │                                                 │
+│  Bridge Layer — Routing, Translation, State             │
+│  ┌──────────┐ ┌──────────────┐ ┌─────────────────────┐  │
+│  │  Router  │ │  Provider    │ │   Task Manager      │  │
+│  └────┬─────┘ └──────────────┘ └─────────────────────┘  │
+│       │                                                 │
+│  Adapter Layer — Pluggable Backends                     │
+│  ┌──────────┐ ┌──────────────┐ ┌─────────────────────┐  │
+│  │   A2A    │ │  (OpenAI)    │ │   (Custom HTTP)     │  │
+│  └────┬─────┘ └──────────────┘ └─────────────────────┘  │
+└───────┼─────────────────────────────────────────────────┘
+        │  A2A Protocol
+┌───────▼─────────────────────────────────────────────────┐
+│  Agent Servers (ADK, LangChain, custom)                 │
+└─────────────────────────────────────────────────────────┘
 ```
 
-By default the server uses STDIO transport. Use HTTP transport by setting:
+## Quick Start
+
+```bash
+pip install agentique
+```
+
+### As an MCP server (stdio)
+
+```bash
+export AGENTIQUE_AGENTS="myagent=http://localhost:9000|skill1,skill2"
+agentique
+```
+
+### As an HTTP server
 
 ```bash
 export AGENTIQUE_TRANSPORT=http
-export AGENTIQUE_HOST=127.0.0.1
 export AGENTIQUE_PORT=8000
+export AGENTIQUE_AGENTS="myagent=http://localhost:9000|skill1,skill2"
+agentique
 ```
 
-## Programmatic usage
+### Programmatic usage
 
 ```python
-from agentique import AgentDescriptor, create_server
+from agentique import AgentInfo, create_server
 
-agents = [
-    AgentDescriptor(name="echo", base_url="http://localhost:9999", skills=("general",)),
-]
-
-mcp = create_server(agents=agents)
-
-if __name__ == "__main__":
-    mcp.run()
+server = create_server(agents=[
+    AgentInfo(
+        name="my-agent",
+        base_url="http://localhost:9000",
+        skills=("math", "text"),
+    ),
+])
+server.run(transport="stdio")
 ```
 
-## MCP surface
+## MCP Tools Exposed
 
-Tools:
+| Tool | Description |
+|------|-------------|
+| `agent` | Send a message to an agent (streams response) |
+| `agents` | List all available agents |
+| `task` | Query task state and progress |
+| `inspect` | View agent's sub-agent hierarchy |
+| `agent_background` | Run agent task in background |
 
-- `a2a_send`: Send a message to an A2A agent and return a structured response.
-- `a2a_stream`: Stream agent responses as chunks.
-- `a2a_list_agents`: List configured agents.
+Each registered agent also gets its own direct tool, plus any tools declared in its A2A agent card.
 
-Resources:
+## Key Concepts
 
-- `a2a://agents`
-- `a2a://agents/{agent}`
-- `a2a://agents/{agent}/card`
+### Protocol Classes (not ABCs)
 
-Prompts:
+All interfaces use `typing.Protocol` for structural subtyping:
 
-- `a2a_routing_prompt`
+```python
+from agentique import AgentAdapter
 
-## Local A2A test agent (Google ADK)
+# Any class with these methods is a valid adapter — no inheritance needed
+class MyAdapter:
+    async def discover_agents(self) -> list[AgentInfo]: ...
+    async def send_message(self, agent_id, message, context) -> AgentResponse: ...
+    async def stream_message(self, agent_id, message, context) -> AsyncIterator[AgentEvent]: ...
+    async def close(self) -> None: ...
 
-The enhanced multi-agent test server lives in `a2a_test_agent/` and demonstrates a sophisticated agent hierarchy with multiple specialized capabilities.
-
-### Test Agent Architecture
-
-The test agent includes:
-- **TestAgentRoot**: Orchestrator that routes to specialized subagents
-- **Calculator**: Arithmetic operations and statistical analysis
-- **DataProcessor**: List filtering, sorting, and batch processing
-- **TextProcessor**: Text transformations and keyword extraction
-- **InfoRetriever**: Information lookup and simulated data fetching
-
-See [a2a_test_agent/README.md](a2a_test_agent/README.md) for detailed documentation.
-
-### Quick Setup
-
-1. Copy `.env.example` to `.env` and add your Google API key:
-```bash
-cp .env.example .env
-# Edit .env and set GOOGLE_API_KEY=your_actual_key
+assert isinstance(MyAdapter(), AgentAdapter)  # True via structural subtyping
 ```
 
-2. Start both services with Docker Compose:
+### Pluggable Routing
+
+```python
+from agentique.bridge.router import AgentRouter, KeywordRouter, DirectRouter
+
+# Keyword-based (default) — matches message content to agent skills
+router = AgentRouter(agents, strategy=KeywordRouter())
+
+# Direct — always routes to a specific agent
+router = AgentRouter(agents, strategy=DirectRouter("my-agent"))
+```
+
+### Typed Error Hierarchy
+
+```python
+from agentique import AgentNotFoundError, TaskNotFoundError
+
+# Each error carries MCP and A2A error codes
+try:
+    router.describe("nonexistent")
+except AgentNotFoundError as e:
+    print(e.mcp_code)   # -32602
+    print(e.a2a_code)   # -32001
+```
+
+### Lifecycle Events
+
+```python
+from agentique import AsyncEventEmitter
+
+emitter = AsyncEventEmitter()
+
+@emitter.on("task.created")
+async def on_task(task_id: str):
+    print(f"Task started: {task_id}")
+
+server = create_server(agents=agents, events=emitter)
+```
+
+### Configuration via Environment
+
+All settings sourced from `AGENTIQUE_*` env vars via Pydantic Settings:
+
 ```bash
+AGENTIQUE_NAME=MyBridge
+AGENTIQUE_TRANSPORT=http
+AGENTIQUE_HOST=0.0.0.0
+AGENTIQUE_PORT=8000
+AGENTIQUE_CACHE_TTL=600
+AGENTIQUE_AGENTS=agent1=http://host:9000|skill1,skill2
+```
+
+## Package Structure
+
+```
+src/agentique/
+├── core/                  # Zero-dependency protocols, types, config
+│   ├── protocols.py       # AgentAdapter, ToolMapper, BridgeMiddleware
+│   ├── types.py           # AgentInfo, AgentEvent, TaskState, etc.
+│   ├── config.py          # Pydantic Settings
+│   ├── errors.py          # Typed exception hierarchy
+│   └── events.py          # AsyncEventEmitter
+├── bridge/                # Protocol-agnostic routing and state
+│   ├── provider.py        # FastMCP 3.0 Provider
+│   ├── router.py          # Pluggable routing strategies
+│   └── task_manager.py    # Task lifecycle management
+├── adapters/              # Protocol-specific backends
+│   └── a2a/               # A2A adapter (first backend)
+│       ├── adapter.py     # A2AAgentAdapter
+│       ├── client.py      # A2A SDK client pool
+│       └── card_parser.py # Agent card → MCP components
+├── server.py              # FastMCP server factory
+└── __main__.py            # CLI entry point
+```
+
+## Docker Compose
+
+```bash
+export GOOGLE_API_KEY=your_key
 docker compose up --build
 ```
 
-This starts:
-- A2A server: http://localhost:9000 (agent card at `/.well-known/agent-card.json`)
-- MCP server: http://localhost:8000
+This starts the A2A test agent (port 9000) and MCP server (port 8000).
 
-### Manual Setup (without Docker)
-
-Start the A2A server:
+## Development
 
 ```bash
-cd a2a_test_agent
-uv pip install -e .
+# Install
+pip install -e ".[test]"
 
-export A2A_HOST=127.0.0.1
-export A2A_PORT=9000
-export A2A_BASE_URL=http://127.0.0.1:9000
-export GOOGLE_API_KEY=your_api_key_here  # REQUIRED
-export ADK_MODEL=gemini-2.0-flash
+# Test
+pytest tests/
 
-uv run adk-test-agent
+# Run locally
+export AGENTIQUE_AGENTS="root=http://localhost:9000|calculator,text"
+python -m agentique
 ```
 
-Start the MCP server (in a separate terminal):
+## License
 
-```bash
-cd ..
-uv pip install -e '.[a2a]'
-export AGENTIQUE_AGENTS="root=http://127.0.0.1:9000|calculator,data_processing,text_manipulation,info_retrieval"
-uv run python -m agentique
-```
-
-## Testing
-
-Tests use FastMCP in-memory transport with an in-process A2A FastAPI app backed by a Google ADK agent. To run tests you will need:
-
-- The A2A Python SDK (import path: `a2a`).
-- Google ADK (import path: `google.adk`).
-- `pytest`, `pytest-asyncio`, `httpx`, and `fastapi`.
-
-Install dependencies with uv and run tests with:
-
-```bash
-uv pip install -e '.[a2a,adk,test]'
-pytest
-```
-
-## Docker compose (fastest end-to-end setup)
-
-```bash
-docker compose up --build
-```
-
-- A2A server: http://localhost:9000 (agent card at `/.well-known/agent-card.json`)
-- MCP server: http://localhost:8000
+MIT

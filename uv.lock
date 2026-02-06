@@ -25,11 +25,12 @@ wheels = [
 
 [[package]]
 name = "agentique"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk" },
     { name = "fastmcp" },
+    { name = "pydantic-settings" },
 ]
 
 [package.optional-dependencies]
@@ -37,7 +38,7 @@ adk = [
     { name = "google-adk" },
 ]
 test = [
-    { name = "fastapi" },
+    { name = "google-adk" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -46,12 +47,13 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "a2a-sdk", specifier = ">=0.3.0" },
-    { name = "fastapi", marker = "extra == 'test'" },
     { name = "fastmcp", specifier = ">=3.0.0b1" },
     { name = "google-adk", marker = "extra == 'adk'" },
+    { name = "google-adk", marker = "extra == 'test'" },
     { name = "httpx", marker = "extra == 'test'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-asyncio", marker = "extra == 'test'" },
+    { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
 ]
 provides-extras = ["adk", "test"]
 

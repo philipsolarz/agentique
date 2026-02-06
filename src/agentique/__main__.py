@@ -1,49 +1,78 @@
+"""CLI entry point for agentique.
+
+Parses agent configuration from the ``AGENTIQUE_AGENTS`` environment
+variable and starts the FastMCP server.
+"""
+
 from __future__ import annotations
 
-import os
-from typing import Iterable
+import logging
 
-from .models import AgentDescriptor
+from .core.config import AgentiqueConfig
+from .core.types import AgentInfo
 from .server import create_server
 
+logger = logging.getLogger(__name__)
 
-def _parse_agents(value: str | None) -> list[AgentDescriptor]:
+
+def _parse_agents(value: str | None) -> list[AgentInfo]:
+    """Parse agent config from env string.
+
+    Format: ``name=url|skill1,skill2;name2=url2|skill3``
+    """
     if not value:
         return []
-    agents: list[AgentDescriptor] = []
+    agents: list[AgentInfo] = []
     for entry in value.split(";"):
         entry = entry.strip()
         if not entry:
             continue
-        name_and_url, *skill_parts = entry.split("|")
-        if "=" not in name_and_url:
+        name_url, *skill_parts = entry.split("|")
+        if "=" not in name_url:
             raise ValueError(
-                "Agent entry must be formatted as name=base_url[|skill1,skill2]"
+                "Agent entry must be: name=base_url[|skill1,skill2]"
             )
-        name, base_url = name_and_url.split("=", 1)
-        skills: Iterable[str] = ()
+        name, base_url = name_url.split("=", 1)
+        skills: tuple[str, ...] = ()
         if skill_parts and skill_parts[0].strip():
-            skills = tuple(skill.strip() for skill in skill_parts[0].split(",") if skill.strip())
-        agents.append(AgentDescriptor(name=name.strip(), base_url=base_url.strip(), skills=tuple(skills)))
+            skills = tuple(
+                s.strip() for s in skill_parts[0].split(",") if s.strip()
+            )
+        agents.append(AgentInfo(
+            name=name.strip(), base_url=base_url.strip(), skills=skills,
+        ))
     return agents
 
 
 def main() -> None:
-    agents = _parse_agents(os.getenv("AGENTIQUE_AGENTS"))
-    server = create_server(agents=agents)
+    """Parse config and run the server."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
-    transport = os.getenv("AGENTIQUE_TRANSPORT", "stdio")
-    host = os.getenv("AGENTIQUE_HOST", "127.0.0.1")
-    port_str = os.getenv("AGENTIQUE_PORT", "8000")
-    try:
-        port = int(port_str)
-    except ValueError as exc:
-        raise ValueError("AGENTIQUE_PORT must be an integer") from exc
+    config = AgentiqueConfig()
+    agents = _parse_agents(config.agents)
 
+    if not agents:
+        logger.warning("No agents configured. Set AGENTIQUE_AGENTS.")
+
+    server = create_server(agents=agents, config=config)
+
+    transport = config.transport
+    # Normalize "http" to "streamable-http" for FastMCP
     if transport == "http":
-        server.run(transport=transport, host=host, port=port)
+        transport = "streamable-http"
+
+    logger.info(
+        "Starting agentique on %s:%d (transport=%s, agents=%d)",
+        config.host, config.port, transport, len(agents),
+    )
+
+    if transport == "stdio":
+        server.run(transport="stdio")
     else:
-        server.run(transport=transport)
+        server.run(transport=transport, host=config.host, port=config.port)
 
 
 if __name__ == "__main__":

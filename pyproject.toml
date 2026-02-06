@@ -1,12 +1,13 @@
 [project]
 name = "agentique"
-version = "0.1.2"
-description = "Bridge the Model Context Protocol with the Agent2Agent protocol."
+version = "0.2.0"
+description = "Protocol-agnostic bridge between MCP clients and any agent ecosystem."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=3.0.0b1",
     "a2a-sdk>=0.3.0",
+    "pydantic-settings>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -14,10 +15,10 @@ adk = [
     "google-adk",
 ]
 test = [
-    "pytest",
-    "pytest-asyncio",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "httpx",
-    "fastapi",
+    "google-adk",
 ]
 
 [project.scripts]
@@ -26,3 +27,7 @@ agentique = "agentique.__main__:main"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
