@@ -9,6 +9,7 @@ from agentique.core.types import AgentInfo
 
 from .a2a import A2AAgentAdapter
 from .http import HttpAgentAdapter
+from .mcp import MCPProxyAdapter
 
 
 @register_adapter("a2a")
@@ -39,9 +40,25 @@ class HttpAdapterFactory:
         return HttpAgentAdapter(agents, **kwargs)
 
 
+@register_adapter("mcp")
+class MCPAdapterFactory:
+    """Factory for creating MCP proxy adapters."""
+
+    protocol_name = "mcp"
+
+    def create(
+        self,
+        agents: dict[str, AgentInfo],
+        **kwargs: Any,
+    ) -> MCPProxyAdapter:
+        return MCPProxyAdapter(agents, **kwargs)
+
+
 __all__ = [
     "A2AAgentAdapter",
     "HttpAgentAdapter",
+    "MCPProxyAdapter",
     "A2AAdapterFactory",
     "HttpAdapterFactory",
+    "MCPAdapterFactory",
 ]

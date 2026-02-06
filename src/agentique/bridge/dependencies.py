@@ -5,6 +5,15 @@ as defaults in FastMCP tool parameters.  Each factory returns a
 component from the server's dependency registry, enabling clean
 separation of concerns and easier testing.
 
+Supports two scopes:
+
+- **Server scope** (default): Components registered via ``configure()``
+  are shared across all sessions.
+- **Session scope**: Per-session overrides stored via
+  ``set_session_override()`` using FastMCP's ``ctx.set_state()``
+  mechanism.  This enables multi-tenant configurations where
+  different sessions get different adapters or routing strategies.
+
 Usage in tools::
 
     from fastmcp.dependencies import Depends
@@ -19,15 +28,19 @@ Usage in tools::
         resolved = router.resolve(message=message)
         ...
 
-The registry is populated by ``create_server()`` during server
-construction and reset via ``clear()`` for testing.
+Session-scoped overrides::
+
+    # Inside a tool with access to ctx:
+    from agentique.bridge.dependencies import set_session_override
+
+    await set_session_override(ctx, "router", my_custom_router)
+    # Subsequent tool calls in this session will use my_custom_router
 """
 
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from agentique.core.config import AgentiqueConfig
 from agentique.core.events import AsyncEventEmitter
@@ -37,9 +50,11 @@ from agentique.bridge.context_manager import ContextManager
 
 logger = logging.getLogger(__name__)
 
+_SESSION_KEY_PREFIX = "_agentique_dep_"
+
 
 # ---------------------------------------------------------------------------
-# Module-level registry
+# Module-level registry (server scope)
 # ---------------------------------------------------------------------------
 
 _registry: dict[str, Any] = {}
@@ -78,71 +93,128 @@ def clear() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session-scoped overrides via FastMCP Context state
+# ---------------------------------------------------------------------------
+
+
+async def set_session_override(ctx: Any, key: str, value: Any) -> None:
+    """Store a per-session dependency override.
+
+    The override will be used by subsequent ``get_*`` calls within
+    the same MCP session, taking precedence over the server-scope
+    registry.
+
+    Args:
+        ctx: The FastMCP ``Context`` instance.
+        key: Registry key (e.g. ``"router"``, ``"adapter"``).
+        value: The dependency to use for this session.
+    """
+    state_key = f"{_SESSION_KEY_PREFIX}{key}"
+    set_state = getattr(ctx, "set_state", None)
+    if callable(set_state):
+        await set_state(state_key, value)
+    else:
+        logger.debug("Context does not support set_state; session override ignored")
+
+
+async def get_session_override(ctx: Any, key: str) -> Any | None:
+    """Retrieve a per-session dependency override, or None."""
+    state_key = f"{_SESSION_KEY_PREFIX}{key}"
+    get_state = getattr(ctx, "get_state", None)
+    if callable(get_state):
+        try:
+            return await get_state(state_key)
+        except Exception:
+            return None
+    return None
+
+
+async def clear_session_overrides(ctx: Any) -> None:
+    """Remove all session overrides for the current session.
+
+    Args:
+        ctx: The FastMCP ``Context`` instance.
+    """
+    for key in ("router", "adapter", "task_manager", "config", "emitter", "context_manager"):
+        state_key = f"{_SESSION_KEY_PREFIX}{key}"
+        delete_state = getattr(ctx, "delete_state", None)
+        if callable(delete_state):
+            try:
+                await delete_state(state_key)
+            except Exception:
+                pass
+
+
+def _resolve(key: str, label: str) -> Any:
+    """Resolve from server-scope registry (sync path)."""
+    value = _registry.get(key)
+    if value is None:
+        raise RuntimeError(
+            f"{label} not configured. "
+            "Ensure create_server() has been called."
+        )
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Dependency factories — each is a ``Depends()``-compatible callable
 # ---------------------------------------------------------------------------
 
 
 def get_router() -> AgentRouter:
     """Return the ``AgentRouter`` registered during server construction."""
-    router = _registry.get("router")
-    if router is None:
-        raise RuntimeError(
-            "AgentRouter not configured. "
-            "Ensure create_server() has been called."
-        )
-    return router
+    return _resolve("router", "AgentRouter")
 
 
 def get_adapter() -> Any:
     """Return the agent adapter registered during server construction."""
-    adapter = _registry.get("adapter")
-    if adapter is None:
-        raise RuntimeError(
-            "Adapter not configured. "
-            "Ensure create_server() has been called."
-        )
-    return adapter
+    return _resolve("adapter", "Adapter")
 
 
 def get_task_manager() -> TaskManager:
     """Return the ``TaskManager`` registered during server construction."""
-    tasks = _registry.get("task_manager")
-    if tasks is None:
-        raise RuntimeError(
-            "TaskManager not configured. "
-            "Ensure create_server() has been called."
-        )
-    return tasks
+    return _resolve("task_manager", "TaskManager")
 
 
 def get_config() -> AgentiqueConfig:
     """Return the ``AgentiqueConfig`` registered during server construction."""
-    config = _registry.get("config")
-    if config is None:
-        raise RuntimeError(
-            "AgentiqueConfig not configured. "
-            "Ensure create_server() has been called."
-        )
-    return config
+    return _resolve("config", "AgentiqueConfig")
 
 
 def get_emitter() -> AsyncEventEmitter:
     """Return the ``AsyncEventEmitter`` registered during server construction."""
-    emitter = _registry.get("emitter")
-    if emitter is None:
-        raise RuntimeError(
-            "AsyncEventEmitter not configured. "
-            "Ensure create_server() has been called."
-        )
-    return emitter
+    return _resolve("emitter", "AsyncEventEmitter")
 
 
 def get_context_manager() -> ContextManager:
     """Return the ``ContextManager`` registered during server construction."""
-    ctx_mgr = _registry.get("context_manager")
-    if ctx_mgr is None:
-        raise RuntimeError(
-            "ContextManager not configured. "
-            "Ensure create_server() has been called."
-        )
-    return ctx_mgr
+    return _resolve("context_manager", "ContextManager")
+
+
+# ---------------------------------------------------------------------------
+# Session-aware factories (async — use inside tools with ctx access)
+# ---------------------------------------------------------------------------
+
+
+async def get_session_router(ctx: Any) -> AgentRouter:
+    """Return session-scoped router override, or server-scope default."""
+    override = await get_session_override(ctx, "router")
+    if override is not None:
+        return override
+    return get_router()
+
+
+async def get_session_adapter(ctx: Any) -> Any:
+    """Return session-scoped adapter override, or server-scope default."""
+    override = await get_session_override(ctx, "adapter")
+    if override is not None:
+        return override
+    return get_adapter()
+
+
+async def get_session_config(ctx: Any) -> AgentiqueConfig:
+    """Return session-scoped config override, or server-scope default."""
+    override = await get_session_override(ctx, "config")
+    if override is not None:
+        return override
+    return get_config()

@@ -74,9 +74,29 @@ from .bridge.dependencies import (
     get_emitter,
     get_router,
     get_task_manager,
+    get_session_router,
+    get_session_adapter,
+    get_session_config,
+    set_session_override,
+    clear_session_overrides,
 )
 from .bridge.fastmcp_middleware import AgentiqueMiddleware
+from .bridge.health import AgentHealth, HealthMonitor
+from .bridge.output_models import (
+    AgentHealthOutput,
+    AgentInspectOutput,
+    AgentListOutput,
+    AgentMessageOutput,
+    AgentSummary,
+    ErrorOutput,
+    HealthCheckOutput,
+    TaskStatusOutput,
+    WebhookNotificationOutput,
+)
+from .bridge.persistent_stores import DynamoDBTaskStore, RedisTaskStore
 from .bridge.storage import InMemoryTaskStore, TaskStore
+from .bridge.visibility import AgentVisibility
+from .bridge.webhook import PushNotification, WebhookReceiver
 
 # Server factory
 from .server import create_server, mount_bridge
@@ -152,6 +172,32 @@ __all__ = [
     "get_emitter",
     "get_router",
     "get_task_manager",
+    "get_session_router",
+    "get_session_adapter",
+    "get_session_config",
+    "set_session_override",
+    "clear_session_overrides",
+    # Health monitoring
+    "AgentHealth",
+    "HealthMonitor",
+    # Output models
+    "AgentHealthOutput",
+    "AgentInspectOutput",
+    "AgentListOutput",
+    "AgentMessageOutput",
+    "AgentSummary",
+    "ErrorOutput",
+    "HealthCheckOutput",
+    "TaskStatusOutput",
+    "WebhookNotificationOutput",
+    # Persistent stores
+    "DynamoDBTaskStore",
+    "RedisTaskStore",
+    # Visibility
+    "AgentVisibility",
+    # Webhooks
+    "PushNotification",
+    "WebhookReceiver",
     # Server
     "create_server",
     "mount_bridge",
