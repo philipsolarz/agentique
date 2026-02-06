@@ -17,7 +17,7 @@ This section covers all features that have been implemented in the codebase, org
 
 All are decorated with `@runtime_checkable` for isinstance checks without inheritance.
 
-**Pydantic Settings configuration** — `AgentiqueConfig` uses `pydantic_settings.BaseSettings` with `AGENTIQUE_` env prefix, `.env` file support, and type validation. Covers transport, host/port, feature flags, performance tuning, and agent routing.
+**Pydantic Settings configuration** — `AgentiqueConfig` uses `pydantic_settings.BaseSettings` with `AGENTIQUE_` env prefix, `.env` file support, and type validation. Covers transport, host/port, feature flags, performance tuning, agent routing, A2A extensions, and transport selection.
 
 **AsyncEventEmitter for lifecycle hooks** — Supports both sync and async handlers with `asyncio.gather()`. Emits events at: `server.start/stop`, `agent.discovered/lost`, `tool.called/completed/failed`, `task.created/state_changed/completed`, `message.sent/received`, `stream.chunk`, `error`.
 
@@ -51,9 +51,9 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 ### Phase 1 — A2A Adapter (Complete)
 
-**A2AAgentAdapter** — Full implementation with `send_message`, `stream_message`, `get_agent_card`, and `close`. Handles both streaming and non-streaming A2A communication. Translates A2A SDK events into `AgentEvent` types.
+**A2AAgentAdapter** — Full implementation with `send_message`, `stream_message`, `get_agent_card`, `get_agent_extensions`, and `close`. Handles both streaming and non-streaming A2A communication. Translates A2A SDK events into `AgentEvent` types. Supports extension propagation in outgoing messages.
 
-**A2AClientPool** — Creates, caches, and manages A2A SDK clients by base URL with configurable timeout and client config.
+**A2AClientPool** — Creates, caches, and manages A2A SDK clients by base URL with configurable timeout, client config, extensions, transport selection, and gRPC channel factory.
 
 **A2ACardParser** — Extracts MCP tool/resource/prompt definitions from agent card extensions (`urn:mcp:extension:tools`). Builds sub-agent hierarchies from card metadata.
 
@@ -105,6 +105,20 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 ### Phase 2 — FastMCP 3.0 Deep Integration (Complete)
 
+**Dependency injection via `Depends()`** — New `agentique.bridge.dependencies` module provides a registry-based DI system compatible with FastMCP 3.0's `Depends()`:
+- `configure()` populates the registry during `create_server()` construction
+- `clear()` resets the registry for testing isolation
+- Factory functions: `get_router()`, `get_adapter()`, `get_task_manager()`, `get_config()`, `get_emitter()`, `get_context_manager()`
+- All server tools use `Depends()` for clean parameter injection instead of closure-captured variables
+- Each factory raises `RuntimeError` with a descriptive message when not configured
+
+**Composition via `mount()`** — New `mount_bridge()` helper enables multi-bridge architectures:
+- Creates a child `FastMCP` server for each adapter bridge
+- Mounts it under the parent server with namespace isolation via `FastMCP.mount()`
+- Separate A2A, HTTP, and local bridges compose under a single MCP endpoint
+- Each mounted bridge gets independent routing, task management, and middleware
+- Example: `mount_bridge(main, agents=a2a_agents, adapter=a2a, namespace="a2a")`
+
 **FastMCP Middleware integration** — `AgentiqueMiddleware` extends FastMCP 3.0's native `Middleware` class with `on_call_tool` and `on_list_tools` hooks. Automatically added by `create_server()`. Provides:
 - Event emission on tool calls (`tool.called` / `tool.completed` / `tool.failed`) via `AsyncEventEmitter`
 - Request timing and logging at the FastMCP server level
@@ -142,7 +156,7 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 **Lifespan composition support** — FastMCP's lifespan pipe operator (`lifespan_a | lifespan_b`) is available for composing startup/shutdown logic across multiple adapter connections. The `AgentProvider` uses FastMCP's `Provider.lifespan()` for adapter lifecycle management. The server factory is structured to support composition via the `providers` parameter.
 
-### Phase 3 — A2A Protocol Completeness (Partial)
+### Phase 3 — A2A Protocol Completeness (Complete)
 
 **Push notification support** — `A2AAgentAdapter.configure_push_notifications()` creates `PushNotificationConfig` instances and configures them on A2A agents via the SDK client:
 - Accepts per-task callback URLs or falls back to adapter-level `push_notification_url`
@@ -167,6 +181,22 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 - `auth-required` → Sends a warning via `ctx.warning()` informing the client to provide credentials
 - `rejected` → Tracked in `TaskState.rejected` (terminal state), properly handled by `TaskTracker`
 
+**A2A extensions mechanism** — Full extension propagation support:
+- `AgentiqueConfig.extensions` — list of A2A extension URIs the client advertises support for (e.g., `["urn:a2a:ext:tracing"]`)
+- `A2AClientPool` accepts `extensions` parameter, passes it to `ClientConfig.extensions` for SDK-level header propagation via `X-A2A-Extensions`
+- `A2AAgentAdapter` accepts `extensions` parameter, attaches extension URIs to outgoing `Message` objects
+- `A2AAgentAdapter.get_agent_extensions()` discovers extensions supported by an agent by reading the agent card's `capabilities.extensions` field
+- Response metadata extraction captures `extensions` from incoming A2A messages/events
+- Supports the full a2a-sdk extension flow: `AgentExtension` type, `find_extension_by_uri()`, `update_extension_header()`, and `HTTP_EXTENSION_HEADER`
+
+**gRPC transport support** — Transport selection is fully configurable:
+- `AgentiqueConfig.supported_transports` — ordered list of preferred transports (e.g., `["JSONRPC", "GRPC"]`)
+- `A2AClientPool` accepts `supported_transports` and `grpc_channel_factory` parameters
+- Passes `supported_transports` to `ClientConfig.supported_transports` for SDK transport negotiation
+- Passes `grpc_channel_factory` to `ClientConfig.grpc_channel_factory` for gRPC channel creation
+- Compatible with the a2a-sdk's `TransportProtocol` enum (`JSONRPC`, `GRPC`, `HTTP+JSON`)
+- Transport negotiation follows the SDK's preference logic: server-preferred by default, client-preferred with `use_client_preference=True`
+
 ### Test Coverage
 
 - `test_core.py` — TaskState, TaskTracker, AgentInfo, BridgeContext (including `.replace()`), AgentEvent, StreamChunk, AgentHierarchy, ContextMapping, Router, Events
@@ -183,26 +213,18 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 - `test_adapter_extended.py` — Push notification config (custom URL, no URL), task resubscription, extended agent cards (basic, authenticated, no support), retry-on-disconnect
 - `test_server_phase2.py` — create_server new params (task_store, namespace, transforms, events), FastMCP middleware auto-registration, ToolResult structured content, TaskConfig API
 - `test_router_structured.py` — LLMRouter structured sampling, fallback to text sampling, complete failure fallback, aresolve with structured sampling
+- `test_dependencies.py` — DI registry configure/clear, all six factory functions, error messages when not configured, partial registration, overwrite semantics
+- `test_composition.py` — mount_bridge child creation, multiple namespace mounting, custom config, child server usability, standalone create_server
+- `test_extensions.py` — Extension attachment on messages, no-extensions default, extension extraction from responses, get_agent_extensions (with card, no card, no capabilities)
+- `test_transport.py` — Config defaults/custom for extensions and transports, A2AClientPool with extensions/transports/gRPC factory/user config, empty pool close
 
-**Total: 128 tests passing (1 skipped)**
+**Total: 166 tests passing (1 skipped)**
 
 ---
 
 ## 2. Pending
 
-This section covers features from the research report that are not yet implemented, organized by priority and effort.
-
-### Phase 2 — Remaining FastMCP 3.0 Integration (Low-Medium Effort)
-
-**Dependency injection via `Depends()`** — The codebase manually constructs dependencies rather than using FastMCP 3.0's `Depends()` for clean injection of agent clients, configuration, and services into tools. This would allow declaring dependencies like `router: AgentRouter = Depends(get_router)`.
-
-**Composition via mounting** — FastMCP's `mount()` could enable mounting separate bridges (A2A, HTTP, local) under a single MCP server with automatic namespace isolation. While `Namespace` transforms are now supported, full `mount()` composition for multi-bridge architectures is not yet implemented.
-
-### Phase 3 — Remaining A2A Protocol Completeness (Medium Effort)
-
-**gRPC transport** — A2A SDK includes `GrpcTransport`. Agentique should support gRPC as a backend option via `ClientConfig(supported_transports=["grpc", "jsonrpc"])`. The `A2AClientPool` would need to accept `grpc_channel_factory` configuration.
-
-**A2A extensions mechanism** — Users should be able to define custom A2A extensions that propagate to agents and are received back in responses (e.g., a tracing extension carrying OpenTelemetry span context). The SDK supports extensions via `AgentExtension`, `X-A2A-Extensions` header, and `ClientConfig.extensions`.
+This section covers features from the research report that are not yet implemented, organized by priority and effort. Items marked with ✦ are new ideas that emerged during implementation.
 
 ### Phase 4 — Ecosystem & Community (High Long-Term Impact, Higher Effort)
 
@@ -222,11 +244,40 @@ This section covers features from the research report that are not yet implement
 
 **Property-based testing** — Use Hypothesis for property-based tests validating protocol compliance across all adapters.
 
+### ✦ New Ideas and Follow-Up Tasks
+
+**✦ Proxy-based adapter via `create_proxy()`** — FastMCP's `create_proxy()` can proxy to remote MCP servers. An adapter could wrap remote MCP servers as "agents" — useful for MCP-to-MCP bridging where a remote MCP server acts like an agent from agentique's perspective.
+
+**✦ Session-scoped dependency injection** — The current DI module uses module-level state. A future improvement could use FastMCP's `CurrentContext()` to scope dependencies per-session, enabling multi-tenant configurations where different sessions get different adapters or routing strategies.
+
+**✦ Webhook receiver for push notifications** — The current push notification support configures agents to POST to a callback URL, but agentique doesn't yet implement the webhook receiver endpoint. A FastMCP resource or dedicated HTTP endpoint should receive push notifications and translate them into MCP `notifications/tasks/status` events.
+
+**✦ Redis/DynamoDB `TaskStore` implementations** — The `TaskStore` protocol is defined with `InMemoryTaskStore` as the default. Production deployments need persistent backends. Reference implementations for Redis (using `redis.asyncio`) and DynamoDB (using `aiobotocore`) would demonstrate the pattern.
+
+**✦ Extension-to-OTel bridge** — Since both A2A extensions and OpenTelemetry are now supported, a built-in "tracing extension" could automatically propagate OTel trace context as an A2A extension (`urn:agentique:ext:otel`), creating end-to-end distributed traces across MCP → agentique → A2A agents.
+
+**✦ `Visibility` transform integration** — Use FastMCP's `Visibility` transform with `ctx.enable_components()`/`ctx.disable_components()` for dynamic agent availability. Users could "unlock" premium agents mid-session or hide agents based on authentication state.
+
+**✦ Client interceptor middleware** — The a2a-sdk supports `ClientCallInterceptor` middleware on the client side. Agentique could expose this to users for request/response interception at the transport level (e.g., adding auth headers, logging raw A2A payloads).
+
+**✦ Adapter health monitoring** — Implement periodic health checks for registered adapters. Unhealthy adapters could be automatically removed from routing and re-added when they recover. The `AsyncEventEmitter` could emit `adapter.healthy`/`adapter.unhealthy` events.
+
+**✦ Tool output schemas** — MCP's `outputSchema` enables structured validation of tool outputs. Agentique's tools could define Pydantic output models that get automatically mapped to `outputSchema` + `structuredContent` validation.
+
 ---
 
 ## File Inventory
 
-### New Files (Phase 2/3)
+### New Files (This Iteration)
+| File | Description |
+|------|-------------|
+| `src/agentique/bridge/dependencies.py` | Dependency injection registry — configure/clear/get_* factories for Depends() integration |
+| `tests/test_dependencies.py` | Tests for DI registry configure, clear, all factory functions, error handling |
+| `tests/test_composition.py` | Tests for mount_bridge multi-bridge composition and namespace isolation |
+| `tests/test_extensions.py` | Tests for A2A extension propagation, discovery, and response extraction |
+| `tests/test_transport.py` | Tests for gRPC transport config, extensions config, A2AClientPool parameters |
+
+### New Files (Phase 2/3 — Previous Iteration)
 | File | Description |
 |------|-------------|
 | `src/agentique/bridge/fastmcp_middleware.py` | AgentiqueMiddleware — FastMCP 3.0 native middleware with event emission, logging, and OTel support |
@@ -239,7 +290,7 @@ This section covers features from the research report that are not yet implement
 | `tests/test_server_phase2.py` | Tests for create_server new params, transforms, ToolResult, TaskConfig |
 | `tests/test_router_structured.py` | Tests for LLMRouter structured sampling with result_type |
 
-### New Files (Phase 1 — previously reported)
+### New Files (Phase 1 — Previously Reported)
 | File | Description |
 |------|-------------|
 | `src/agentique/core/registry.py` | Adapter registry with entry-point discovery |
@@ -257,19 +308,25 @@ This section covers features from the research report that are not yet implement
 | `tests/test_registry.py` | Adapter registry tests |
 | `tests/test_testing_utils.py` | Testing utility tests |
 
-### Modified Files (Phase 2/3)
+### Modified Files (This Iteration)
 | File | Changes |
 |------|---------|
-| `src/agentique/__init__.py` | Exports new components: AgentiqueMiddleware, InMemoryTaskStore, TaskStore, telemetry functions |
+| `src/agentique/server.py` | Refactored all tools to use `Depends()` for DI; added `mount_bridge()` composition helper |
+| `src/agentique/__init__.py` | Exports DI factories, `mount_bridge`, and new bridge dependencies |
+| `src/agentique/bridge/__init__.py` | Exports DI factory functions from dependencies module |
+| `src/agentique/core/config.py` | Added `extensions` and `supported_transports` fields to `AgentiqueConfig` |
+| `src/agentique/adapters/a2a/client.py` | Added `extensions`, `supported_transports`, and `grpc_channel_factory` support |
+| `src/agentique/adapters/a2a/adapter.py` | Added `extensions` param, `get_agent_extensions()`, extension propagation in messages, extension extraction from responses |
+
+### Modified Files (Phase 2/3 — Previous Iteration)
+| File | Changes |
+|------|---------|
 | `src/agentique/core/__init__.py` | Exports telemetry module (get_tracer, set_span_attribute, trace_agent_call) |
-| `src/agentique/bridge/__init__.py` | Exports AgentiqueMiddleware, InMemoryTaskStore, TaskStore |
 | `src/agentique/bridge/router.py` | LLMRouter enhanced with structured sampling via `result_type` |
 | `src/agentique/bridge/task_manager.py` | Accepts pluggable `TaskStore` backend (default: `InMemoryTaskStore`) |
-| `src/agentique/adapters/a2a/adapter.py` | Added push notification config, task resubscription, extended card support, retry-on-disconnect |
-| `src/agentique/server.py` | Integrated FastMCP middleware, transforms, elicitation, ToolResult, TaskConfig, OTel, auth-required handling |
 | `pyproject.toml` | Bumped version to 0.4.0 |
 
-### Modified Files (Phase 1 — previously reported)
+### Modified Files (Phase 1 — Previously Reported)
 | File | Changes |
 |------|---------|
 | `src/agentique/core/types.py` | Added `ContextMapping`, `BridgeContext.replace()` |

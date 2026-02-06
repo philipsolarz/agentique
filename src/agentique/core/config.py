@@ -52,5 +52,12 @@ class AgentiqueConfig(BaseSettings):
     prefetch_cards: bool = True
     default_timeout: float = 60.0
 
+    # A2A extensions — URIs the client advertises support for
+    extensions: list[str] = Field(default_factory=list)
+
+    # A2A transport — ordered list of preferred transports
+    # Accepted values: "JSONRPC", "GRPC", "HTTP+JSON"
+    supported_transports: list[str] = Field(default_factory=list)
+
     # Agent routing (parsed from env var)
     agents: str = ""  # raw env string; parsed by __main__

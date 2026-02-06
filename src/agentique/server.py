@@ -14,13 +14,14 @@ Design principles:
     - Real-time interactivity (streaming by default)
     - Preserve agent semantics and structure visibility
 
-Phase 2 integration features:
+Integration features:
+    - Dependency injection via ``Depends()`` for clean tool signatures
     - FastMCP Middleware (AgentiqueMiddleware) for server-level hooks
     - Transform support (Namespace, Visibility) for agent isolation
+    - Composition via ``mount()`` for multi-bridge architectures
     - Elicitation for input-required A2A task states
     - Structured content via ToolResult
     - TaskConfig for fine-grained background task control
-    - Lifespan composition for multi-adapter startup/shutdown
     - OpenTelemetry span attributes
 """
 
@@ -32,12 +33,12 @@ from typing import Any
 from uuid import uuid4
 
 from fastmcp import Context, FastMCP
-from fastmcp.dependencies import CurrentContext
+from fastmcp.dependencies import CurrentContext, Depends
 from fastmcp.tools.tool import ToolResult
 
 from .core.config import AgentiqueConfig
 from .core.events import AsyncEventEmitter
-from .core.telemetry import set_span_attribute, trace_agent_call
+from .core.telemetry import set_span_attribute
 from .core.types import (
     AgentEvent,
     AgentHierarchy,
@@ -48,6 +49,16 @@ from .core.types import (
 )
 from .adapters.a2a import A2AAgentAdapter, A2AClientPool, A2ACardParser
 from .bridge.context_manager import ContextManager
+from .bridge.dependencies import (
+    clear as clear_deps,
+    configure as configure_deps,
+    get_adapter,
+    get_config,
+    get_context_manager,
+    get_emitter,
+    get_router,
+    get_task_manager,
+)
 from .bridge.fastmcp_middleware import AgentiqueMiddleware
 from .bridge.middleware import (
     ErrorMappingMiddleware,
@@ -105,7 +116,6 @@ def create_server(
         agent_map = {a.name: a for a in agent_list}
         pool: A2AClientPool | None = None
         if client_factory is not None:
-            # Legacy support: wrap old-style factory
             pool = _wrap_legacy_factory(client_factory)
         else:
             pool = A2AClientPool(timeout=config.default_timeout)
@@ -131,6 +141,19 @@ def create_server(
     # Build context manager
     context_mgr = ContextManager()
 
+    # Task manager with pluggable storage
+    tasks = TaskManager(store=task_store or InMemoryTaskStore())
+
+    # Populate the dependency registry for Depends()-based injection
+    configure_deps(
+        router=router,
+        adapter=adapter,
+        task_manager=tasks,
+        config=config,
+        emitter=emitter,
+        context_manager=context_mgr,
+    )
+
     # Build server
     mcp = FastMCP(config.name, providers=[provider])
 
@@ -146,10 +169,7 @@ def create_server(
         for transform in transforms:
             mcp.add_transform(transform)
 
-    # Task manager with pluggable storage
-    tasks = TaskManager(store=task_store or InMemoryTaskStore())
-
-    # ---- Core tools ----
+    # ---- Core tools (using Depends() for dependency injection) ----
 
     @mcp.tool(name="agent")
     async def agent_tool(
@@ -157,6 +177,12 @@ def create_server(
         target: str | None = None,
         context_id: str | None = None,
         ctx: Context = CurrentContext(),
+        _router: AgentRouter = Depends(get_router),
+        _adapter: Any = Depends(get_adapter),
+        _tasks: TaskManager = Depends(get_task_manager),
+        _config: AgentiqueConfig = Depends(get_config),
+        _emitter: AsyncEventEmitter = Depends(get_emitter),
+        _ctx_mgr: ContextManager = Depends(get_context_manager),
     ):
         """Send a message to an A2A agent and stream the response.
 
@@ -169,28 +195,28 @@ def create_server(
 
         # Resolve context ID via the context manager
         session_id = getattr(ctx, "session_id", None)
-        effective_ctx_id = await context_mgr.resolve_context(
+        effective_ctx_id = await _ctx_mgr.resolve_context(
             session_id=session_id,
             context_id=context_id,
             task_id=task_id,
         )
-        await context_mgr.track_task(effective_ctx_id, task_id)
+        await _ctx_mgr.track_task(effective_ctx_id, task_id)
 
-        tracker = await tasks.create(task_id, effective_ctx_id)
+        tracker = await _tasks.create(task_id, effective_ctx_id)
         hierarchy = AgentHierarchy(root=target or "auto")
 
         # Conversation history
         metadata: dict[str, Any] = {}
         if context_id:
-            history = tasks.get_conversation_history(context_id)
+            history = _tasks.get_conversation_history(context_id)
             if history:
                 metadata["conversation_history"] = history
 
-        await emitter.emit("task.created", task_id=task_id)
+        await _emitter.emit("task.created", task_id=task_id)
 
         try:
             # Use aresolve for LLM-capable routing
-            resolved = await router.aresolve(
+            resolved = await _router.aresolve(
                 name=target, message=message, ctx=ctx,
             )
 
@@ -205,7 +231,7 @@ def create_server(
                 )
 
             index = 0
-            async for event in adapter.stream_message(
+            async for event in _adapter.stream_message(
                 resolved.name, message, bridge_ctx,
             ):
                 tracker.add_event(event)
@@ -229,7 +255,7 @@ def create_server(
                         await ctx.report_progress(int(chunk.progress), 100)
 
                 # Handle input-required state via elicitation
-                if chunk.state == "input-required" and config.enable_elicitation:
+                if chunk.state == "input-required" and _config.enable_elicitation:
                     elicit_text = chunk.text or "The agent requires additional input."
                     try:
                         elicit_result = await ctx.elicit(
@@ -237,9 +263,8 @@ def create_server(
                             response_type=None,
                         )
                         if hasattr(elicit_result, "data") and elicit_result.data:
-                            # Send the user's response back to the agent
                             user_input = str(elicit_result.data)
-                            async for follow_event in adapter.stream_message(
+                            async for follow_event in _adapter.stream_message(
                                 resolved.name, user_input, bridge_ctx,
                             ):
                                 tracker.add_event(follow_event)
@@ -248,7 +273,7 @@ def create_server(
                                 )
                                 index += 1
                                 if follow_chunk.kind in {"message", "artifact"} and follow_chunk.text:
-                                    await emitter.emit("stream.chunk", chunk=follow_chunk)
+                                    await _emitter.emit("stream.chunk", chunk=follow_chunk)
                                     yield follow_chunk.text
                     except Exception as elicit_exc:
                         logger.warning("Elicitation failed: %s", elicit_exc)
@@ -262,7 +287,7 @@ def create_server(
 
                 # Yield content
                 if chunk.kind in {"message", "artifact"} and chunk.text:
-                    await emitter.emit("stream.chunk", chunk=chunk)
+                    await _emitter.emit("stream.chunk", chunk=chunk)
                     yield chunk.text
 
         finally:
@@ -277,17 +302,19 @@ def create_server(
                 if e.text and e.kind in {"message", "artifact"}
             ).strip()
             if all_text and effective_ctx_id:
-                tasks.append_conversation(effective_ctx_id, message, all_text)
+                _tasks.append_conversation(effective_ctx_id, message, all_text)
 
             if hierarchy.agents:
-                await tasks.set_hierarchy(task_id, hierarchy)
+                await _tasks.set_hierarchy(task_id, hierarchy)
 
-            await emitter.emit("task.completed", task_id=task_id)
+            await _emitter.emit("task.completed", task_id=task_id)
 
     @mcp.tool(name="agents")
-    def agents_tool() -> ToolResult:
+    def agents_tool(
+        _router: AgentRouter = Depends(get_router),
+    ) -> ToolResult:
         """List available A2A agents and their capabilities."""
-        agents_data = [a.to_dict() for a in router.list_agents()]
+        agents_data = [a.to_dict() for a in _router.list_agents()]
         return ToolResult(
             content=json.dumps(agents_data, indent=2),
             structured_content={"agents": agents_data},
@@ -297,13 +324,14 @@ def create_server(
     async def task_tool(
         id: str,
         ctx: Context = CurrentContext(),
+        _tasks: TaskManager = Depends(get_task_manager),
     ) -> ToolResult:
         """Query the state of a task.
 
         Args:
             id: The task ID to query
         """
-        tracker = await tasks.get_or_none(id)
+        tracker = await _tasks.get_or_none(id)
         if tracker:
             data = tracker.to_dict()
             return ToolResult(
@@ -361,6 +389,9 @@ def create_server(
             async def agent_background_tool(
                 message: str,
                 target: str | None = None,
+                _router: AgentRouter = Depends(get_router),
+                _adapter: Any = Depends(get_adapter),
+                _tasks: TaskManager = Depends(get_task_manager),
             ) -> ToolResult:
                 """Send a message as a background task.
 
@@ -375,8 +406,8 @@ def create_server(
                 bg_ctx = get_context()
 
                 task_id = str(uuid4())
-                tracker = await tasks.create(task_id)
-                resolved = router.resolve(name=target, message=message)
+                tracker = await _tasks.create(task_id)
+                resolved = _router.resolve(name=target, message=message)
 
                 set_span_attribute("agentique.agent_name", resolved.name)
                 set_span_attribute("agentique.task_id", task_id)
@@ -386,7 +417,7 @@ def create_server(
                 chunks: list[str] = []
                 idx = 0
                 try:
-                    async for event in adapter.stream_message(
+                    async for event in _adapter.stream_message(
                         resolved.name, message, bridge_ctx,
                     ):
                         tracker.add_event(event)
@@ -423,6 +454,9 @@ def create_server(
                     message: str,
                     target: str | None = None,
                     progress: Any = Progress(),
+                    _router: AgentRouter = Depends(get_router),
+                    _adapter: Any = Depends(get_adapter),
+                    _tasks: TaskManager = Depends(get_task_manager),
                 ) -> ToolResult:
                     """Send a message as a background task.
 
@@ -440,14 +474,14 @@ def create_server(
                     await progress.set_message("Connecting to agent...")
 
                     task_id = str(uuid4())
-                    tracker = await tasks.create(task_id)
-                    resolved = router.resolve(name=target, message=message)
+                    tracker = await _tasks.create(task_id)
+                    resolved = _router.resolve(name=target, message=message)
                     bridge_ctx = BridgeContext.from_fastmcp_context(bg_ctx)
 
                     chunks: list[str] = []
                     idx = 0
                     try:
-                        async for event in adapter.stream_message(
+                        async for event in _adapter.stream_message(
                             resolved.name, message, bridge_ctx,
                         ):
                             tracker.add_event(event)
@@ -491,6 +525,58 @@ def create_server(
         )
 
     return mcp
+
+
+# ---------------------------------------------------------------------------
+# Composition helpers
+# ---------------------------------------------------------------------------
+
+
+def mount_bridge(
+    parent: FastMCP,
+    *,
+    agents: list[AgentInfo],
+    adapter: Any,
+    namespace: str,
+    config: AgentiqueConfig | None = None,
+    events: AsyncEventEmitter | None = None,
+    task_store: TaskStore | None = None,
+) -> FastMCP:
+    """Create and mount a sub-bridge under *parent* with namespace isolation.
+
+    This enables multi-protocol architectures where separate adapter
+    bridges (A2A, HTTP, local) are composed under a single MCP server::
+
+        main = FastMCP("Main")
+        mount_bridge(main, agents=a2a_agents, adapter=a2a_adapter, namespace="a2a")
+        mount_bridge(main, agents=http_agents, adapter=http_adapter, namespace="http")
+
+    Args:
+        parent: The parent ``FastMCP`` server to mount into.
+        agents: Agent descriptors for this bridge.
+        adapter: Pre-configured adapter for this bridge.
+        namespace: Namespace prefix for all tools in this bridge.
+        config: Optional server configuration override.
+        events: Optional event emitter override.
+        task_store: Optional storage backend override.
+
+    Returns:
+        The child ``FastMCP`` server that was mounted.
+    """
+    child = create_server(
+        agents=agents,
+        adapter=adapter,
+        config=config or AgentiqueConfig(
+            name=f"Agentique-{namespace}",
+            enable_background_tasks=False,
+            prefetch_cards=False,
+        ),
+        events=events,
+        task_store=task_store,
+    )
+
+    parent.mount(child, namespace=namespace)
+    return child
 
 
 # ---------------------------------------------------------------------------

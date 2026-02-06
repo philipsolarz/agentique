@@ -1,6 +1,16 @@
 """Bridge layer components for routing, provider mapping, and task state."""
 
 from .context_manager import ContextManager
+from .dependencies import (
+    clear as clear_dependencies,
+    configure as configure_dependencies,
+    get_adapter,
+    get_config,
+    get_context_manager,
+    get_emitter,
+    get_router,
+    get_task_manager,
+)
 from .fastmcp_middleware import AgentiqueMiddleware
 from .middleware import (
     ErrorMappingMiddleware,
@@ -39,4 +49,13 @@ __all__ = [
     "TaskStore",
     "WeightedKeywordRouter",
     "TaskManager",
+    # Dependencies
+    "clear_dependencies",
+    "configure_dependencies",
+    "get_adapter",
+    "get_config",
+    "get_context_manager",
+    "get_emitter",
+    "get_router",
+    "get_task_manager",
 ]

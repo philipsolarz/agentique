@@ -65,11 +65,21 @@ from .bridge.middleware import (
     RateLimitMiddleware,
 )
 from .bridge.context_manager import ContextManager
+from .bridge.dependencies import (
+    clear as clear_dependencies,
+    configure as configure_dependencies,
+    get_adapter,
+    get_config,
+    get_context_manager,
+    get_emitter,
+    get_router,
+    get_task_manager,
+)
 from .bridge.fastmcp_middleware import AgentiqueMiddleware
 from .bridge.storage import InMemoryTaskStore, TaskStore
 
 # Server factory
-from .server import create_server
+from .server import create_server, mount_bridge
 
 __all__ = [
     # Core types
@@ -133,6 +143,16 @@ __all__ = [
     "MetricsMiddleware",
     "MiddlewareChain",
     "RateLimitMiddleware",
+    # Dependencies
+    "clear_dependencies",
+    "configure_dependencies",
+    "get_adapter",
+    "get_config",
+    "get_context_manager",
+    "get_emitter",
+    "get_router",
+    "get_task_manager",
     # Server
     "create_server",
+    "mount_bridge",
 ]

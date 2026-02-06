@@ -4,11 +4,12 @@ This is the primary adapter for communicating with agents that speak
 the A2A protocol. It translates between agentique's core types and the
 A2A SDK's message/request types.
 
-Phase 2/3 features:
+Features:
     - Push notification configuration
     - Task resubscription for resilient streaming
     - Extended agent card support (authenticated cards)
     - Auth-required / rejected state handling
+    - A2A extension propagation via ``extensions`` parameter
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ class A2AAgentAdapter:
         push_notification_url: Callback URL for push notification delivery.
         retry_on_disconnect: Enable automatic task resubscription on SSE drops.
         max_resubscribe_attempts: Maximum resubscription attempts before failing.
+        extensions: A2A extension URIs to include in outgoing messages.
     """
 
     def __init__(
@@ -71,6 +73,7 @@ class A2AAgentAdapter:
         push_notification_url: str | None = None,
         retry_on_disconnect: bool = True,
         max_resubscribe_attempts: int = 3,
+        extensions: list[str] | None = None,
     ) -> None:
         self._agents = dict(agents)
         self._pool = client_pool or A2AClientPool()
@@ -78,6 +81,7 @@ class A2AAgentAdapter:
         self._push_url = push_notification_url
         self._retry_on_disconnect = retry_on_disconnect
         self._max_resubscribe = max_resubscribe_attempts
+        self._extensions = extensions or []
 
     # ---- AgentAdapter protocol ----
 
@@ -161,6 +165,49 @@ class A2AAgentAdapter:
                     return extended
 
         return card
+
+    async def get_agent_extensions(
+        self,
+        agent_id: str,
+    ) -> list[dict[str, Any]]:
+        """Discover A2A extensions supported by an agent.
+
+        Reads the agent card's ``capabilities.extensions`` field and
+        returns a list of extension descriptors.
+
+        Args:
+            agent_id: Agent to query.
+
+        Returns:
+            List of extension dicts with ``uri``, ``description``,
+            ``required``, and ``params`` keys.
+        """
+        card = await self.get_agent_card(agent_id)
+        if card is None:
+            return []
+
+        capabilities = getattr(card, "capabilities", None)
+        if capabilities is None:
+            return []
+
+        raw_extensions = getattr(capabilities, "extensions", None)
+        if not raw_extensions:
+            return []
+
+        result: list[dict[str, Any]] = []
+        for ext in raw_extensions:
+            entry: dict[str, Any] = {"uri": getattr(ext, "uri", str(ext))}
+            desc = getattr(ext, "description", None)
+            if desc:
+                entry["description"] = desc
+            required = getattr(ext, "required", None)
+            if required is not None:
+                entry["required"] = required
+            params = getattr(ext, "params", None)
+            if params is not None:
+                entry["params"] = params
+            result.append(entry)
+        return result
 
     async def close(self) -> None:
         await self._pool.close()
@@ -289,14 +336,26 @@ class A2AAgentAdapter:
         metadata: dict[str, Any] = {"mcp": context.to_metadata()}
         if context.conversation_history:
             metadata["conversation_history"] = context.conversation_history
-        # Attach metadata to message
+
+        # Attach extensions to the message
+        update_fields: dict[str, Any] = {"metadata": metadata}
+        if self._extensions:
+            update_fields["extensions"] = list(self._extensions)
+
         if hasattr(msg, "model_copy"):
-            msg = msg.model_copy(update={"metadata": metadata})
-        elif hasattr(msg, "metadata"):
-            try:
-                msg.metadata = metadata
-            except Exception:
-                pass
+            msg = msg.model_copy(update=update_fields)
+        else:
+            if hasattr(msg, "metadata"):
+                try:
+                    msg.metadata = metadata
+                except Exception:
+                    pass
+            if self._extensions and hasattr(msg, "extensions"):
+                try:
+                    msg.extensions = list(self._extensions)
+                except Exception:
+                    pass
+
         return msg, metadata
 
     def _build_request(self, message: Any, metadata: dict[str, Any]) -> Any:
@@ -512,6 +571,10 @@ class A2AAgentAdapter:
             if obj_meta.get("requires_confirmation"):
                 meta["requires_confirmation"] = True
                 meta["tool_call"] = obj_meta.get("tool_call")
+        # Capture A2A extension URIs from the response
+        extensions = getattr(obj, "extensions", None)
+        if extensions and isinstance(extensions, (list, tuple)):
+            meta["extensions"] = list(extensions)
         return meta
 
     def _message_text(self, message: Any) -> str | None:
