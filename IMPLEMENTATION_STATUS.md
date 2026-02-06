@@ -70,12 +70,13 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 ### Phase 1 — Server & Tools (Complete)
 
-**FastMCP server factory** with five core tools:
-- `agent` — send message and stream response (with LLM-capable routing via `aresolve`)
+**FastMCP server factory** with seven core tools:
+- `agent` — send message and return structured task output (with LLM-capable routing via `aresolve`)
 - `agents` — list available agents
 - `task` — query task state
 - `inspect` — view agent hierarchy
 - `agent_background` — background task with `Progress` reporting
+- `enable_components` / `disable_components` — session-scoped visibility controls using FastMCP component visibility APIs
 
 **Task manager** — In-memory task tracking with state machine, conversation continuity, hierarchy tracking.
 
@@ -83,7 +84,7 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 **Sub-agent visibility** — `AgentHierarchy` and `SubAgentInfo` track nested agent structures with branch path resolution.
 
-**Background task support** — Uses FastMCP's `task=True` and `Progress` dependency injection for progress tracking.
+**Background task support** — Uses FastMCP's `TaskConfig(mode="optional", poll_interval=...)` and `Progress` dependency injection for progress tracking.
 
 ### Phase 1 — Second Adapter (Complete)
 
@@ -103,15 +104,59 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 - `mock_agent_info()` — factory for test `AgentInfo` instances
 - `mock_agent_card()` — factory for test agent card dictionaries
 
+### Phase 2 — FastMCP 3.0 Deep Integration (Substantially Complete)
+
+**Transform classes integrated** — Agentique now wires FastMCP transforms through configuration:
+- `Namespace` via `AGENTIQUE_COMPONENT_NAMESPACE`
+- `ToolTransform` via `AGENTIQUE_TOOL_TRANSFORMATIONS`
+- `Visibility` via `AGENTIQUE_DISABLED_COMPONENT_NAMES`
+- Optional `ResourcesAsTools` / `PromptsAsTools` flags
+
+**FastMCP middleware hooks integrated** — Added `FastMCPBridgeMiddleware` to bridge `MiddlewareChain` into FastMCP server hooks:
+- `on_call_tool`
+- `on_list_tools`
+- `on_read_resource`
+
+**Dependency injection via `Depends()`** — Core tools now inject shared services (`AgentRouter`, `TaskManager`, `ContextManager`, `AgentProvider`, adapter, event emitter) through FastMCP dependencies.
+
+**Structured output & output schema alignment** — `agent` and `agent_background` tools return `ToolResult` with structured content, and `agent` declares an explicit output schema.
+
+**Task API modernization** — Background tasks now use `TaskConfig` poll interval controls from config (`AGENTIQUE_BACKGROUND_TASK_POLL_INTERVAL_SECONDS`).
+
+**Lifespan composition** — Server lifespan now composes lifecycle hooks with external lifespan callables using FastMCP `combine_lifespans`.
+
+**OpenTelemetry span attributes** — Agent tool lifecycle emits optional span attributes when tracing is enabled:
+- `agentique.agent_name`
+- `agentique.protocol`
+- `agentique.task_id`
+- `agentique.task_state`
+
+**Elicitation with typed response model** — When agents emit `input-required` / `auth-required` states, Agentique now uses `ctx.elicit()` with a Pydantic response type for structured client feedback.
+
+**Sampling tool loop improvements** — `LLMRouter` now calls `ctx.sample(..., tools=..., result_type=...)` and parses structured results before falling back.
+
+### Phase 3 — A2A Protocol Completeness (Partially Complete)
+
+**Push notification config passthrough** — Adapter now maps context-level options into `MessageSendConfiguration.pushNotificationConfig`.
+
+**Task resubscription support** — Streaming now attempts automatic `tasks/resubscribe` recovery for retryable stream drops when a task ID is known.
+
+**gRPC/transport preference support** — `A2AClientPool` now supports `ClientConfig.supported_transports` and `use_client_preference` via config.
+
+**A2A extension passthrough** — Adapter and client pool now propagate configured/per-request extensions to A2A SDK calls.
+
+**Auth/rejected state handling** — `auth-required` and `rejected` states now map to task transitions and elicitation flow in the MCP tool path.
+
 ### Test Coverage
 
-- `test_core.py` — TaskState, TaskTracker, AgentInfo, BridgeContext (including `.replace()`), AgentEvent, StreamChunk, AgentHierarchy, ContextMapping, Router, Events
-- `test_middleware.py` — MiddlewareChain ordering, LoggingMiddleware, ErrorMappingMiddleware, RateLimitMiddleware, MetricsMiddleware
+- `test_core.py` — TaskState, TaskTracker, AgentInfo, BridgeContext (including `.replace()`), AgentEvent, StreamChunk, AgentHierarchy, ContextMapping, Router, Events, config parsing helpers
+- `test_middleware.py` — MiddlewareChain ordering, LoggingMiddleware, ErrorMappingMiddleware, RateLimitMiddleware, MetricsMiddleware, FastMCP middleware bridge hooks
 - `test_tool_mapper.py` — DefaultToolMapper, PerSkillToolMapper, FlatHierarchyToolMapper
 - `test_context_manager.py` — ContextMapping, ContextManager async operations
-- `test_router_extended.py` — WeightedKeywordRouter, LLMRouter (sync/async/fuzzy/error), aresolve, unregister
+- `test_router_extended.py` — WeightedKeywordRouter, LLMRouter (sync/async/fuzzy/error/structured sampling), aresolve, unregister
 - `test_registry.py` — adapter registration, discovery, creation
 - `test_testing_utils.py` — MockAdapter, MockStreamingAdapter, RecordingMiddleware, factory helpers
+- `test_a2a_adapter.py` — extension/config passthrough, resubscribe recovery, card extension forwarding
 - `test_bridge.py` — end-to-end MCP→A2A integration tests
 
 ---
@@ -122,48 +167,23 @@ This section covers features from the research report that are not yet implement
 
 ### Phase 2 — FastMCP 3.0 Deep Integration (High Impact, Low-Medium Effort)
 
-**Transform classes for component modification** — FastMCP 3.0's `Transform` classes (`Namespace`, `ToolTransform`, `Visibility`, `ResourcesAsTools`, `PromptsAsTools`) are not yet used. Agentique should expose transform hooks so users can:
-- Apply `Namespace` transforms per agent to prevent tool name collisions
-- Use `Visibility` with session-level control (`ctx.enable_components()` / `ctx.disable_components()`) for dynamic agent availability
-- Apply custom `ToolTransform` instances for tool renaming
-
-**FastMCP Middleware integration** — While agentique has its own `MiddlewareChain` at the bridge layer, it does not yet use FastMCP 3.0's own `Middleware` class with `on_call_tool`, `on_list_tools`, and `on_read_resource` hooks. These should be used for server-level cross-cutting concerns.
-
-**Dependency injection via `Depends()`** — The codebase manually constructs dependencies rather than using FastMCP 3.0's `Depends()` for clean injection of agent clients, configuration, and services into tools.
-
-**OpenTelemetry integration** — No tracing spans are emitted. Should add `agentique.agent_name`, `agentique.protocol`, `agentique.task_state` attributes to FastMCP's built-in OpenTelemetry spans.
-
 **Storage backends for task persistence** — TaskManager uses in-memory dicts. FastMCP 3.0 supports pluggable storage backends (Redis, DynamoDB, filesystem). Task state should use these for production persistence.
 
-**Elicitation with response types** — FastMCP 3.0's `ctx.elicit()` with Pydantic models is not yet used. Should enable structured confirmation dialogs for agent actions (e.g., when an A2A agent returns `input-required` state).
-
-**Sampling with tool loop** — `ctx.sample()` now supports `tools` and `tool_choice` parameters. The `LLMRouter` uses basic sampling but does not leverage the tool loop for structured agent selection via `result_type`.
-
-**Lifespan composition** — FastMCP's pipe operator (`lifespan_a | lifespan_b`) for composing startup/shutdown logic across multiple agent connections is not yet used.
-
-**Structured content** — Tools returning dicts/Pydantic models should use FastMCP's automatic structured JSON alongside traditional content, aligning with MCP's `outputSchema`/`structuredContent` spec.
-
-**`TaskConfig` API** — Currently uses `task=True` but should leverage `TaskConfig(mode="optional", poll_interval=timedelta(seconds=2))` for fine-grained control.
+**Provider/storage integration for tasks** — Server task metadata is still held in memory. Migration to FastMCP state stores (or Redis/DynamoDB-backed custom stores) remains open.
 
 **Composition via mounting** — FastMCP's `mount()` could enable mounting separate bridges (A2A, HTTP, local) under a single MCP server with automatic namespace isolation.
 
+**Transform ergonomics** — Transform hooks are wired, but higher-level presets (e.g., per-agent automatic namespacing policies and richer tool transform helpers) are still minimal.
+
 ### Phase 3 — A2A Protocol Completeness (Medium Impact, Moderate Effort)
 
-**Push notification support** — A2A supports webhook-based push notifications for long-running tasks (`PushNotificationConfig`, JWT signing). Agentique should:
-- Accept push notification config from MCP clients
-- Configure push notifications on A2A servers
-- Translate incoming webhooks into MCP `notifications/tasks/status`
-- Use SDK's `InMemoryPushNotifier` and `PushNotificationConfigStore`
-
-**Task resubscription** — A2A's `tasks/resubscribe` method allows reconnecting to active streams after disconnection. The bridge should implement reconnection logic instead of failing on SSE drops.
-
-**gRPC transport** — A2A SDK includes `GrpcTransport`. Agentique should support gRPC as a backend option via `ClientConfig(ordered_transports=["gRPC", "JSONRPC"])`.
+**Push notification webhooks (server-side receiver)** — Client-side push config passthrough is implemented, but webhook ingestion and translation into MCP task notifications is still pending.
 
 **Extended agent cards** — A2A distinguishes between public cards (unauthenticated, at `/.well-known/agent-card.json`) and extended cards (authenticated, revealing additional skills). Agentique should fetch extended cards when credentials are available.
 
-**A2A extensions mechanism** — Users should be able to define custom A2A extensions that propagate to agents and are received back in responses (e.g., a tracing extension carrying OpenTelemetry span context).
+**Extension contract UX** — Extension passthrough exists, but typed extension registration/validation APIs are not yet implemented.
 
-**Auth-required and rejected state handling** — A2A's `auth-required` and `rejected` task states should be translated into MCP elicitation or appropriate error flows, not just generic errors.
+**Task resubscription robustness** — Basic automatic resubscribe exists, but needs richer retry policy (backoff, resumable checkpoints, and explicit observability).
 
 ### Phase 4 — Ecosystem & Community (High Long-Term Impact, Higher Effort)
 
@@ -187,34 +207,26 @@ This section covers features from the research report that are not yet implement
 
 ## File Inventory
 
-### New Files
+### New Files (This Pass)
 | File | Description |
 |------|-------------|
-| `src/agentique/core/registry.py` | Adapter registry with entry-point discovery |
-| `src/agentique/core/tool_mapper.py` | DefaultToolMapper, PerSkillToolMapper, FlatHierarchyToolMapper |
-| `src/agentique/bridge/middleware.py` | MiddlewareChain and built-in middleware |
-| `src/agentique/bridge/context_manager.py` | MCP session ↔ A2A context ID mapping |
-| `src/agentique/adapters/http/__init__.py` | Generic HTTP adapter package |
-| `src/agentique/adapters/http/adapter.py` | HttpAgentAdapter implementation |
-| `src/agentique/testing/__init__.py` | Public test utilities package |
-| `src/agentique/testing/mocks.py` | MockAdapter, MockStreamingAdapter, helpers |
-| `tests/test_middleware.py` | Middleware chain and built-in middleware tests |
-| `tests/test_tool_mapper.py` | ToolMapper implementation tests |
-| `tests/test_context_manager.py` | ContextManager and ContextMapping tests |
-| `tests/test_router_extended.py` | LLMRouter, WeightedKeywordRouter tests |
-| `tests/test_registry.py` | Adapter registry tests |
-| `tests/test_testing_utils.py` | Testing utility tests |
+| `tests/test_a2a_adapter.py` | New unit tests for A2A extension/config passthrough and stream resubscribe behavior |
 
-### Modified Files
+### Modified Files (This Pass)
 | File | Changes |
 |------|---------|
 | `src/agentique/__init__.py` | Exports new components |
-| `src/agentique/core/__init__.py` | Exports new types, mappers, registry |
-| `src/agentique/core/types.py` | Added `ContextMapping`, `BridgeContext.replace()` |
-| `src/agentique/core/protocols.py` | Added `AdapterFactory` protocol |
+| `src/agentique/core/config.py` | Added FastMCP transform/task settings and A2A transport/extension/push config parsing helpers |
 | `src/agentique/bridge/__init__.py` | Exports middleware, context manager, new routers |
-| `src/agentique/bridge/router.py` | Added `LLMRouter`, `WeightedKeywordRouter`, `aresolve()`, `unregister()` |
-| `src/agentique/adapters/__init__.py` | Registers built-in adapters via `@register_adapter` |
-| `src/agentique/server.py` | Integrates middleware chain, context manager, `aresolve()` |
-| `tests/test_core.py` | Added `BridgeContext.replace()` and `ContextMapping` tests |
-| `pyproject.toml` | Added httpx dependency, entry points, bumped version to 0.3.0 |
+| `src/agentique/bridge/middleware.py` | Added `FastMCPBridgeMiddleware` for `on_call_tool`, `on_list_tools`, `on_read_resource` integration |
+| `src/agentique/bridge/router.py` | Upgraded `LLMRouter` to use `ctx.sample(..., tools=..., result_type=...)` structured routing |
+| `src/agentique/adapters/a2a/client.py` | Added transport preference, extension, push config, and resolver options support in client pool |
+| `src/agentique/adapters/a2a/adapter.py` | Added per-call A2A config/extension parsing, push config passthrough, resubscribe recovery, and state handling enhancements |
+| `src/agentique/server.py` | Added FastMCP transforms, middleware bridge, `Depends()` injection, `TaskConfig`, structured tool outputs, session visibility tools, lifespan composition, OTel attributes |
+| `tests/test_core.py` | Added config parsing and background poll-interval tests |
+| `tests/test_middleware.py` | Added tests for `FastMCPBridgeMiddleware` hooks |
+| `tests/test_router_extended.py` | Added structured-sampling test and `ctx.sample` kwargs compatibility |
+| `tests/test_bridge.py` | Updated for FastMCP 3 result shapes and modern A2A client behavior |
+| `tests/support/a2a_server.py` | Updated request handler to modern A2A request/response contracts |
+| `tests/support/adk_agent.py` | Added compatibility fallback for evolving Google ADK callable interfaces |
+| `IMPLEMENTATION_STATUS.md` | Updated completion/pending status and file inventory |

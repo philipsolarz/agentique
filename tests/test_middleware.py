@@ -7,6 +7,7 @@ import pytest
 
 from agentique.bridge.middleware import (
     ErrorMappingMiddleware,
+    FastMCPBridgeMiddleware,
     LoggingMiddleware,
     MetricsMiddleware,
     MiddlewareChain,
@@ -181,3 +182,60 @@ class _AddFieldMiddleware:
     async def process(self, request, call_next):
         request[self._key] = self._value
         return await call_next(request)
+
+
+class _FakeToolMessage:
+    def __init__(self, name: str, arguments: dict | None = None) -> None:
+        self.name = name
+        self.arguments = arguments or {}
+
+    def model_copy(self, update: dict) -> "_FakeToolMessage":
+        return _FakeToolMessage(
+            name=update.get("name", self.name),
+            arguments=update.get("arguments", self.arguments),
+        )
+
+
+class _FakeMiddlewareContext:
+    def __init__(self, message) -> None:
+        self.message = message
+
+    def copy(self, **kwargs):
+        msg = kwargs.get("message", self.message)
+        return _FakeMiddlewareContext(msg)
+
+
+@pytest.mark.asyncio
+async def test_fastmcp_bridge_middleware_tool_passthrough():
+    chain = MiddlewareChain().add(_AddFieldMiddleware("agent", "patched"))
+    mw = FastMCPBridgeMiddleware(chain)
+    context = _FakeMiddlewareContext(_FakeToolMessage("original", {"x": 1}))
+
+    async def call_next(next_context):
+        return {
+            "tool_name": next_context.message.name,
+            "args": next_context.message.arguments,
+        }
+
+    result = await mw.on_call_tool(context, call_next)
+    assert result["tool_name"] == "patched"
+    assert result["args"] == {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_fastmcp_bridge_middleware_read_resource():
+    chain = MiddlewareChain().add(_AddFieldMiddleware("extra", True))
+    mw = FastMCPBridgeMiddleware(chain)
+
+    class ResourceMsg:
+        def __init__(self):
+            self.uri = "a2a://agents"
+
+    context = _FakeMiddlewareContext(ResourceMsg())
+
+    async def call_next(next_context):
+        return {"ok": True, "uri": next_context.message.uri}
+
+    result = await mw.on_read_resource(context, call_next)
+    assert result["ok"] is True
+    assert result["uri"] == "a2a://agents"

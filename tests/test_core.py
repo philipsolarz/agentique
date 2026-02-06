@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from agentique.core.config import AgentiqueConfig
 from agentique.core.types import (
     AgentEvent,
     AgentHierarchy,
@@ -214,3 +215,25 @@ async def test_event_emitter_off():
     emitter.off("e", handler)
     await emitter.emit("e")
     assert results == []
+
+
+# ---- Config ----
+
+
+def test_config_parsed_csv_fields():
+    cfg = AgentiqueConfig(
+        a2a_supported_transports="gRPC,JSONRPC",
+        a2a_extensions="trace,debug",
+        disabled_component_names="internal_tool,legacy_agent",
+    )
+    assert cfg.parsed_a2a_supported_transports == ["gRPC", "JSONRPC"]
+    assert cfg.parsed_a2a_extensions == ["trace", "debug"]
+    assert cfg.parsed_disabled_component_names == {
+        "internal_tool",
+        "legacy_agent",
+    }
+
+
+def test_config_background_poll_interval_minimum():
+    cfg = AgentiqueConfig(background_task_poll_interval_seconds=0)
+    assert cfg.background_task_poll_interval.total_seconds() == pytest.approx(0.1)

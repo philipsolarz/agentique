@@ -58,6 +58,7 @@ from .bridge.provider import AgentProvider
 from .bridge.task_manager import TaskManager
 from .bridge.middleware import (
     ErrorMappingMiddleware,
+    FastMCPBridgeMiddleware,
     LoggingMiddleware,
     MetricsMiddleware,
     MiddlewareChain,
@@ -119,6 +120,7 @@ __all__ = [
     "TaskManager",
     # Middleware
     "ErrorMappingMiddleware",
+    "FastMCPBridgeMiddleware",
     "LoggingMiddleware",
     "MetricsMiddleware",
     "MiddlewareChain",

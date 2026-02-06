@@ -12,6 +12,8 @@ import json
 import logging
 from typing import Any, Iterable, Protocol, runtime_checkable
 
+from pydantic import BaseModel
+
 from agentique.core.errors import AgentNotFoundError
 from agentique.core.types import AgentInfo
 
@@ -29,6 +31,10 @@ class RoutingStrategy(Protocol):
     ) -> AgentInfo:
         """Select the best agent for *message*."""
         ...
+
+
+class _AgentSelection(BaseModel):
+    agent_name: str
 
 
 class KeywordRouter:
@@ -170,13 +176,17 @@ class LLMRouter:
             f"Which agent should handle this? Reply with the agent name only."
         )
 
+        def list_available_agents() -> list[str]:
+            return [a.name for a in available]
+
         try:
             result = await ctx.sample(
                 prompt,
                 system_prompt=self._system_prompt,
+                tools=[list_available_agents],
+                result_type=_AgentSelection,
             )
-            # Extract text from sampling result
-            chosen_name = str(result).strip().lower()
+            chosen_name = _extract_agent_name(result).lower()
 
             for agent in available:
                 if agent.name.lower() == chosen_name:
@@ -312,3 +322,25 @@ class AgentRouter:
         if self._default is None:
             raise RuntimeError("No agents registered in the router.")
         return self.describe(self._default)
+
+
+def _extract_agent_name(result: Any) -> str:
+    """Extract selected agent name from FastMCP sampling result variants."""
+    if isinstance(result, _AgentSelection):
+        return result.agent_name.strip()
+
+    parsed = getattr(result, "result", None)
+    if isinstance(parsed, _AgentSelection):
+        return parsed.agent_name.strip()
+    if isinstance(parsed, dict):
+        for key in ("agent_name", "agent", "name"):
+            val = parsed.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    if isinstance(parsed, str) and parsed.strip():
+        return parsed.strip()
+
+    text = getattr(result, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return str(result).strip()

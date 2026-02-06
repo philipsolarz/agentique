@@ -75,7 +75,7 @@ async def test_llm_router_with_mock_ctx():
     """aselect() with a mock ctx.sample() should use LLM routing."""
 
     class MockCtx:
-        async def sample(self, prompt, system_prompt=None):
+        async def sample(self, prompt, system_prompt=None, **kwargs):
             return "text"  # Simulate LLM choosing "text" agent
 
     router = LLMRouter()
@@ -89,7 +89,7 @@ async def test_llm_router_fuzzy_match():
     """LLM returning extra text should still match via fuzzy matching."""
 
     class MockCtx:
-        async def sample(self, prompt, system_prompt=None):
+        async def sample(self, prompt, system_prompt=None, **kwargs):
             return "I think data would be the best choice"
 
     router = LLMRouter()
@@ -103,7 +103,7 @@ async def test_llm_router_unknown_response_fallback():
     """LLM returning an unknown name should fall back to keywords."""
 
     class MockCtx:
-        async def sample(self, prompt, system_prompt=None):
+        async def sample(self, prompt, system_prompt=None, **kwargs):
             return "nonexistent-agent"
 
     router = LLMRouter()
@@ -117,13 +117,30 @@ async def test_llm_router_error_fallback():
     """If ctx.sample() raises, should fall back to keywords."""
 
     class FailingCtx:
-        async def sample(self, prompt, system_prompt=None):
+        async def sample(self, prompt, system_prompt=None, **kwargs):
             raise RuntimeError("sampling failed")
 
     router = LLMRouter()
     agents = _agents()
     result = await router.aselect("do some math", agents, ctx=FailingCtx())
     assert result.name == "calc"
+
+
+@pytest.mark.asyncio
+async def test_llm_router_structured_sampling_result():
+    class Result:
+        result = {"agent_name": "data"}
+
+    class MockCtx:
+        async def sample(self, prompt, system_prompt=None, **kwargs):
+            assert "tools" in kwargs
+            assert "result_type" in kwargs
+            return Result()
+
+    router = LLMRouter()
+    agents = _agents()
+    result = await router.aselect("analyze dataset", agents, ctx=MockCtx())
+    assert result.name == "data"
 
 
 # ---- AgentRouter.aresolve ----
@@ -146,7 +163,7 @@ async def test_aresolve_by_skill():
 @pytest.mark.asyncio
 async def test_aresolve_with_llm_strategy():
     class MockCtx:
-        async def sample(self, prompt, system_prompt=None):
+        async def sample(self, prompt, system_prompt=None, **kwargs):
             return "data"
 
     router = AgentRouter(_agents(), strategy=LLMRouter())

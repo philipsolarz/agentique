@@ -21,6 +21,11 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
+try:
+    from fastmcp.server.middleware import Middleware as FastMCPMiddleware
+except Exception:  # pragma: no cover - fastmcp is a required runtime dependency
+    FastMCPMiddleware = object  # type: ignore[assignment]
+
 # Type alias for the call_next function
 CallNext = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -269,3 +274,96 @@ class MetricsMiddleware:
                 ) if count > 0 else 0.0,
             }
         return result
+
+
+class FastMCPBridgeMiddleware(FastMCPMiddleware):
+    """Adapter that runs the bridge ``MiddlewareChain`` inside FastMCP hooks."""
+
+    def __init__(self, chain: MiddlewareChain) -> None:
+        self._chain = chain
+
+    async def on_call_tool(
+        self,
+        context: Any,
+        call_next: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        message = getattr(context, "message", None)
+        request = {
+            "action": "tools/call",
+            "agent": getattr(message, "name", "__unknown__"),
+            "arguments": getattr(message, "arguments", {}) or {},
+        }
+
+        async def final_handler(payload: dict[str, Any]) -> Any:
+            next_context = _copy_context_with_message(context, payload)
+            return await call_next(next_context)
+
+        return await self._chain.execute(request, final_handler)
+
+    async def on_list_tools(
+        self,
+        context: Any,
+        call_next: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        request = {"action": "tools/list", "agent": "__catalog__"}
+
+        async def final_handler(payload: dict[str, Any]) -> Any:
+            return await call_next(context)
+
+        return await self._chain.execute(request, final_handler)
+
+    async def on_read_resource(
+        self,
+        context: Any,
+        call_next: Callable[[Any], Awaitable[Any]],
+    ) -> Any:
+        message = getattr(context, "message", None)
+        request = {
+            "action": "resources/read",
+            "agent": "__resource__",
+            "uri": getattr(message, "uri", None),
+        }
+
+        async def final_handler(payload: dict[str, Any]) -> Any:
+            return await call_next(context)
+
+        return await self._chain.execute(request, final_handler)
+
+
+def _copy_context_with_message(context: Any, payload: dict[str, Any]) -> Any:
+    """Copy middleware context with updated call-tool message fields."""
+    message = getattr(context, "message", None)
+    if message is None:
+        return context
+
+    updates: dict[str, Any] = {}
+    requested_name = payload.get("agent")
+    if isinstance(requested_name, str) and requested_name:
+        updates["name"] = requested_name
+
+    arguments = payload.get("arguments")
+    if isinstance(arguments, dict):
+        updates["arguments"] = arguments
+
+    if not updates:
+        return context
+
+    updated_message = message
+    if hasattr(message, "model_copy"):
+        try:
+            updated_message = message.model_copy(update=updates)
+        except Exception:
+            updated_message = message
+    else:
+        try:
+            for key, value in updates.items():
+                setattr(updated_message, key, value)
+        except Exception:
+            return context
+
+    if hasattr(context, "copy"):
+        try:
+            return context.copy(message=updated_message)
+        except Exception:
+            return context
+    return context

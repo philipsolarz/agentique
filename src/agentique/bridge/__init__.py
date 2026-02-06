@@ -3,6 +3,7 @@
 from .context_manager import ContextManager
 from .middleware import (
     ErrorMappingMiddleware,
+    FastMCPBridgeMiddleware,
     LoggingMiddleware,
     MetricsMiddleware,
     MiddlewareChain,
@@ -22,6 +23,7 @@ from .task_manager import TaskManager
 __all__ = [
     "ContextManager",
     "ErrorMappingMiddleware",
+    "FastMCPBridgeMiddleware",
     "LoggingMiddleware",
     "MetricsMiddleware",
     "MiddlewareChain",

@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator, Iterable
 from a2a.client.client_factory import minimal_agent_card
 from a2a.server.apps import A2AFastAPIApplication
 from a2a.server.request_handlers.request_handler import RequestHandler
-from a2a.types import SendMessageResponse, SendStreamingMessageResponse
+from a2a.types import Message
 from a2a.utils.errors import MethodNotImplementedError
 from a2a.utils.message import get_message_text, new_agent_text_message
 
@@ -17,25 +17,27 @@ class AdkRequestHandler(RequestHandler):
         self._agent = agent
         self.last_metadata: dict[str, Any] | None = None
 
-    async def on_message_send(self, request: Any, context: Any | None = None) -> SendMessageResponse:
-        self.last_metadata = getattr(request.params, "metadata", None) or getattr(
-            request.params.message, "metadata", None
+    async def on_message_send(self, request: Any, context: Any | None = None) -> Message:
+        params = _extract_send_params(request)
+        self.last_metadata = getattr(params, "metadata", None) or getattr(
+            params.message, "metadata", None
         )
-        text = get_message_text(request.params.message)
+        text = get_message_text(params.message)
         response_text = await self._agent.reply(text)
-        return SendMessageResponse(result=new_agent_text_message(response_text))
+        return new_agent_text_message(response_text)
 
     def on_message_send_stream(
         self, request: Any, context: Any | None = None
-    ) -> AsyncIterator[SendStreamingMessageResponse]:
-        async def _stream() -> AsyncIterator[SendStreamingMessageResponse]:
-            self.last_metadata = getattr(request.params, "metadata", None) or getattr(
-                request.params.message, "metadata", None
+    ) -> AsyncIterator[Message]:
+        async def _stream() -> AsyncIterator[Message]:
+            params = _extract_send_params(request)
+            self.last_metadata = getattr(params, "metadata", None) or getattr(
+                params.message, "metadata", None
             )
-            text = get_message_text(request.params.message)
+            text = get_message_text(params.message)
             response_text = await self._agent.reply(text)
             for chunk in _chunk_text(response_text, size=32):
-                yield SendStreamingMessageResponse(result=new_agent_text_message(chunk))
+                yield new_agent_text_message(chunk)
 
         return _stream()
 
@@ -47,7 +49,7 @@ class AdkRequestHandler(RequestHandler):
 
     async def on_resubscribe_to_task(
         self, request: Any, context: Any | None = None
-    ) -> AsyncIterator[SendStreamingMessageResponse]:
+    ) -> AsyncIterator[Message]:
         raise MethodNotImplementedError("tasks/resubscribe not supported in test agent")
 
     async def on_set_task_push_notification_config(self, params: Any, context: Any | None = None) -> Any:
@@ -81,3 +83,8 @@ def _chunk_text(text: str, *, size: int) -> Iterable[str]:
     if not text:
         return [""]
     return (text[i : i + size] for i in range(0, len(text), size))
+
+
+def _extract_send_params(request: Any) -> Any:
+    """Support both legacy ``SendMessageRequest`` and modern ``MessageSendParams``."""
+    return getattr(request, "params", request)
