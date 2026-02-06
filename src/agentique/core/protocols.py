@@ -7,7 +7,7 @@ inheritance from a base class is ever required.
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Callable, Awaitable, Protocol, runtime_checkable
 
 from .types import AgentEvent, AgentInfo, AgentResponse, BridgeContext
 
@@ -97,7 +97,34 @@ class BridgeMiddleware(Protocol):
     async def process(
         self,
         request: dict[str, Any],
-        call_next: Any,
+        call_next: Callable[[dict[str, Any]], Awaitable[Any]],
     ) -> Any:
         """Process a bridge request, optionally delegating to *call_next*."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Adapter registry protocol — pluggable adapter discovery
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class AdapterFactory(Protocol):
+    """Protocol for adapter factories that create adapters from config.
+
+    Entry-point based discovery enables ``pip install agentique-openai``
+    to make the adapter available without explicit imports.
+    """
+
+    def create(
+        self,
+        agents: dict[str, AgentInfo],
+        **kwargs: Any,
+    ) -> AgentAdapter:
+        """Create an adapter instance from agent descriptors and config."""
+        ...
+
+    @property
+    def protocol_name(self) -> str:
+        """Short identifier for the protocol (e.g. 'a2a', 'openai', 'http')."""
         ...

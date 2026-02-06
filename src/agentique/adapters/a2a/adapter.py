@@ -165,6 +165,8 @@ class A2AAgentAdapter:
         if hasattr(client, "send_message_streaming") and streaming:
             request = self._build_streaming_request(message, metadata)
             iterator = client.send_message_streaming(request)
+            if inspect.isawaitable(iterator):
+                iterator = await iterator
             async for raw_event in iterator:
                 yield self._translate_event(raw_event)
             return
@@ -172,8 +174,15 @@ class A2AAgentAdapter:
         # Non-streaming fallback
         request = self._build_request(message, metadata)
         if hasattr(client, "send_message"):
-            response = await client.send_message(request)
-            yield self._translate_event(response)
+            result = client.send_message(request)
+            if inspect.isawaitable(result):
+                result = await result
+
+            if hasattr(result, "__aiter__"):
+                async for raw_event in result:
+                    yield self._translate_event(raw_event)
+            else:
+                yield self._translate_event(result)
             return
 
         raise RuntimeError("A2A client does not expose send_message")

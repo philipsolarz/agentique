@@ -11,6 +11,7 @@ from agentique.core.types import (
     AgentHierarchy,
     AgentInfo,
     BridgeContext,
+    ContextMapping,
     StreamChunk,
     TaskState,
     TaskTracker,
@@ -74,6 +75,21 @@ def test_bridge_context_metadata():
     assert meta["request_id"] == "r1"
 
 
+def test_bridge_context_replace():
+    ctx = BridgeContext(session_id="s1", request_id="r1")
+    new_ctx = ctx.replace(session_id="s2")
+    assert new_ctx.session_id == "s2"
+    assert new_ctx.request_id == "r1"  # unchanged
+
+
+def test_bridge_context_replace_conversation_history():
+    ctx = BridgeContext(session_id="s1")
+    history = [{"role": "user", "content": "hello"}]
+    new_ctx = ctx.replace(conversation_history=history)
+    assert new_ctx.conversation_history == history
+    assert new_ctx.session_id == "s1"
+
+
 # ---- AgentEvent ----
 
 def test_event_properties():
@@ -108,6 +124,24 @@ def test_hierarchy_path():
     h.add_agent("add", parent="calc")
     assert h.get_path("add") == ["root", "calc", "add"]
     assert h.agents["add"].depth == 2
+
+
+# ---- ContextMapping ----
+
+def test_context_mapping_basic():
+    m = ContextMapping()
+    m.bind("s1", "c1")
+    m.bind("s1", "c2")
+    assert m.get_session("c1") == "s1"
+    assert m.get_contexts("s1") == {"c1", "c2"}
+
+
+def test_context_mapping_tasks():
+    m = ContextMapping()
+    m.track_task("c1", "t1")
+    m.track_task("c1", "t2")
+    assert m.get_tasks("c1") == ["t1", "t2"]
+    assert m.get_tasks("c_unknown") == []
 
 
 # ---- Router ----

@@ -36,6 +36,12 @@ from .core.types import (
     TaskState,
 )
 from .adapters.a2a import A2AAgentAdapter, A2AClientPool, A2ACardParser
+from .bridge.context_manager import ContextManager
+from .bridge.middleware import (
+    ErrorMappingMiddleware,
+    LoggingMiddleware,
+    MiddlewareChain,
+)
 from .bridge.provider import AgentProvider
 from .bridge.router import AgentRouter
 from .bridge.task_manager import TaskManager
@@ -51,6 +57,7 @@ def create_server(
     client_factory: Any | None = None,
     config: AgentiqueConfig | None = None,
     events: AsyncEventEmitter | None = None,
+    middleware: list[Any] | None = None,
 ) -> FastMCP:
     """Create a FastMCP server bridging MCP clients to agent backends.
 
@@ -61,6 +68,7 @@ def create_server(
         client_factory: Legacy — passed to A2A adapter as client pool.
         config: Server configuration.
         events: Event emitter for lifecycle hooks.
+        middleware: List of middleware instances for the bridge chain.
 
     Returns:
         A fully configured ``FastMCP`` server instance.
@@ -93,6 +101,17 @@ def create_server(
         prefetch_cards=config.prefetch_cards,
     )
 
+    # Build middleware chain
+    chain = MiddlewareChain()
+    chain.add(LoggingMiddleware())
+    chain.add(ErrorMappingMiddleware())
+    if middleware:
+        for mw in middleware:
+            chain.add(mw)
+
+    # Build context manager
+    context_mgr = ContextManager()
+
     # Build server
     mcp = FastMCP(config.name, providers=[provider])
 
@@ -116,7 +135,16 @@ def create_server(
             context_id: Optional context ID for conversation continuity
         """
         task_id = str(uuid4())
-        effective_ctx_id = context_id or task_id
+
+        # Resolve context ID via the context manager
+        session_id = getattr(ctx, "session_id", None)
+        effective_ctx_id = await context_mgr.resolve_context(
+            session_id=session_id,
+            context_id=context_id,
+            task_id=task_id,
+        )
+        await context_mgr.track_task(effective_ctx_id, task_id)
+
         tracker = await tasks.create(task_id, effective_ctx_id)
         hierarchy = AgentHierarchy(root=target or "auto")
 
@@ -130,14 +158,13 @@ def create_server(
         await emitter.emit("task.created", task_id=task_id)
 
         try:
-            resolved = router.resolve(name=target, message=message)
+            # Use aresolve for LLM-capable routing
+            resolved = await router.aresolve(
+                name=target, message=message, ctx=ctx,
+            )
             bridge_ctx = BridgeContext.from_fastmcp_context(ctx)
             if metadata.get("conversation_history"):
-                bridge_ctx = BridgeContext(
-                    session_id=bridge_ctx.session_id,
-                    request_id=bridge_ctx.request_id,
-                    client_id=bridge_ctx.client_id,
-                    meta=bridge_ctx.meta,
+                bridge_ctx = bridge_ctx.replace(
                     conversation_history=metadata["conversation_history"],
                 )
 

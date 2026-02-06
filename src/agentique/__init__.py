@@ -25,6 +25,7 @@ from .core.types import (
     AgentInfo,
     AgentResponse,
     BridgeContext,
+    ContextMapping,
     StreamChunk,
     SubAgentInfo,
     TaskState,
@@ -41,12 +42,28 @@ from .core.errors import (
     TranslationError,
 )
 from .core.events import AsyncEventEmitter, EventHook
-from .core.protocols import AgentAdapter, BridgeMiddleware, ToolMapper
+from .core.protocols import AdapterFactory, AgentAdapter, BridgeMiddleware, ToolMapper
+from .core.registry import create_adapter, discover_adapters, list_protocols, register_adapter
+from .core.tool_mapper import DefaultToolMapper, FlatHierarchyToolMapper, PerSkillToolMapper
 
 # Bridge layer
-from .bridge.router import AgentRouter, KeywordRouter, DirectRouter
+from .bridge.router import (
+    AgentRouter,
+    DirectRouter,
+    KeywordRouter,
+    LLMRouter,
+    WeightedKeywordRouter,
+)
 from .bridge.provider import AgentProvider
 from .bridge.task_manager import TaskManager
+from .bridge.middleware import (
+    ErrorMappingMiddleware,
+    LoggingMiddleware,
+    MetricsMiddleware,
+    MiddlewareChain,
+    RateLimitMiddleware,
+)
+from .bridge.context_manager import ContextManager
 
 # Server factory
 from .server import create_server
@@ -58,6 +75,7 @@ __all__ = [
     "AgentInfo",
     "AgentResponse",
     "BridgeContext",
+    "ContextMapping",
     "StreamChunk",
     "SubAgentInfo",
     "TaskState",
@@ -77,15 +95,34 @@ __all__ = [
     "AsyncEventEmitter",
     "EventHook",
     # Protocols
+    "AdapterFactory",
     "AgentAdapter",
     "BridgeMiddleware",
     "ToolMapper",
+    # Registry
+    "create_adapter",
+    "discover_adapters",
+    "list_protocols",
+    "register_adapter",
+    # Tool mappers
+    "DefaultToolMapper",
+    "FlatHierarchyToolMapper",
+    "PerSkillToolMapper",
     # Bridge
     "AgentProvider",
     "AgentRouter",
+    "ContextManager",
     "DirectRouter",
     "KeywordRouter",
+    "LLMRouter",
+    "WeightedKeywordRouter",
     "TaskManager",
+    # Middleware
+    "ErrorMappingMiddleware",
+    "LoggingMiddleware",
+    "MetricsMiddleware",
+    "MiddlewareChain",
+    "RateLimitMiddleware",
     # Server
     "create_server",
 ]

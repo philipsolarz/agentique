@@ -11,13 +11,16 @@ from .errors import (
     TranslationError,
 )
 from .events import AsyncEventEmitter, EventHook
-from .protocols import AgentAdapter, BridgeMiddleware, ToolMapper
+from .protocols import AdapterFactory, AgentAdapter, BridgeMiddleware, ToolMapper
+from .registry import create_adapter, discover_adapters, list_protocols, register_adapter
+from .tool_mapper import DefaultToolMapper, FlatHierarchyToolMapper, PerSkillToolMapper
 from .types import (
     AgentEvent,
     AgentHierarchy,
     AgentInfo,
     AgentResponse,
     BridgeContext,
+    ContextMapping,
     StreamChunk,
     SubAgentInfo,
     TaskState,
@@ -36,14 +39,23 @@ __all__ = [
     "TranslationError",
     "AsyncEventEmitter",
     "EventHook",
+    "AdapterFactory",
     "AgentAdapter",
     "BridgeMiddleware",
     "ToolMapper",
+    "create_adapter",
+    "discover_adapters",
+    "list_protocols",
+    "register_adapter",
+    "DefaultToolMapper",
+    "FlatHierarchyToolMapper",
+    "PerSkillToolMapper",
     "AgentEvent",
     "AgentHierarchy",
     "AgentInfo",
     "AgentResponse",
     "BridgeContext",
+    "ContextMapping",
     "StreamChunk",
     "SubAgentInfo",
     "TaskState",

@@ -94,6 +94,18 @@ class BridgeContext:
             meta=meta,
         )
 
+    def replace(self, **kwargs: Any) -> BridgeContext:
+        """Return a new BridgeContext with specified fields replaced."""
+        return BridgeContext(
+            session_id=kwargs.get("session_id", self.session_id),
+            request_id=kwargs.get("request_id", self.request_id),
+            client_id=kwargs.get("client_id", self.client_id),
+            meta=kwargs.get("meta", self.meta),
+            conversation_history=kwargs.get(
+                "conversation_history", self.conversation_history
+            ),
+        )
+
     def to_metadata(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if self.session_id:
@@ -350,3 +362,54 @@ class AgentHierarchy:
             "root": self.root,
             "agents": {n: i.to_dict() for n, i in self.agents.items()},
         }
+
+
+# ---------------------------------------------------------------------------
+# Context mapping (MCP session ↔ A2A context)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ContextMapping:
+    """Maps MCP session IDs to A2A context IDs.
+
+    Maintains a bidirectional mapping so that conversation continuity
+    is preserved across protocol boundaries. Each MCP session can have
+    multiple context IDs (one per conversation thread).
+    """
+
+    _session_to_contexts: dict[str, set[str]] = field(default_factory=dict)
+    _context_to_session: dict[str, str] = field(default_factory=dict)
+    _context_to_task_ids: dict[str, list[str]] = field(default_factory=dict)
+
+    def bind(self, session_id: str, context_id: str) -> None:
+        """Associate a context ID with an MCP session."""
+        if session_id not in self._session_to_contexts:
+            self._session_to_contexts[session_id] = set()
+        self._session_to_contexts[session_id].add(context_id)
+        self._context_to_session[context_id] = session_id
+
+    def get_session(self, context_id: str) -> str | None:
+        """Look up the MCP session for a given context."""
+        return self._context_to_session.get(context_id)
+
+    def get_contexts(self, session_id: str) -> set[str]:
+        """Return all context IDs bound to an MCP session."""
+        return self._session_to_contexts.get(session_id, set())
+
+    def track_task(self, context_id: str, task_id: str) -> None:
+        """Associate a task ID with its context."""
+        if context_id not in self._context_to_task_ids:
+            self._context_to_task_ids[context_id] = []
+        self._context_to_task_ids[context_id].append(task_id)
+
+    def get_tasks(self, context_id: str) -> list[str]:
+        """Return all task IDs for a given context."""
+        return self._context_to_task_ids.get(context_id, [])
+
+    def unbind_session(self, session_id: str) -> None:
+        """Remove all mappings for a session (cleanup on disconnect)."""
+        contexts = self._session_to_contexts.pop(session_id, set())
+        for ctx_id in contexts:
+            self._context_to_session.pop(ctx_id, None)
+            self._context_to_task_ids.pop(ctx_id, None)
