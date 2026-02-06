@@ -1,4 +1,4 @@
-"""Core protocols, types, config, and errors for agentique."""
+"""Core protocols, types, config, errors, and telemetry for agentique."""
 
 from .config import AdapterConfig, AgentiqueConfig
 from .errors import (
@@ -13,6 +13,7 @@ from .errors import (
 from .events import AsyncEventEmitter, EventHook
 from .protocols import AdapterFactory, AgentAdapter, BridgeMiddleware, ToolMapper
 from .registry import create_adapter, discover_adapters, list_protocols, register_adapter
+from .telemetry import get_tracer, set_span_attribute, trace_agent_call
 from .tool_mapper import DefaultToolMapper, FlatHierarchyToolMapper, PerSkillToolMapper
 from .types import (
     AgentEvent,
@@ -47,6 +48,9 @@ __all__ = [
     "discover_adapters",
     "list_protocols",
     "register_adapter",
+    "get_tracer",
+    "set_span_attribute",
+    "trace_agent_call",
     "DefaultToolMapper",
     "FlatHierarchyToolMapper",
     "PerSkillToolMapper",

@@ -3,6 +3,12 @@
 This is the primary adapter for communicating with agents that speak
 the A2A protocol. It translates between agentique's core types and the
 A2A SDK's message/request types.
+
+Phase 2/3 features:
+    - Push notification configuration
+    - Task resubscription for resilient streaming
+    - Extended agent card support (authenticated cards)
+    - Auth-required / rejected state handling
 """
 
 from __future__ import annotations
@@ -30,8 +36,10 @@ try:
     from a2a.types import (
         MessageSendConfiguration,
         MessageSendParams,
+        PushNotificationConfig,
         SendMessageRequest,
         SendStreamingMessageRequest,
+        TaskIdParams,
     )
 except ImportError as exc:
     raise RuntimeError(
@@ -44,6 +52,14 @@ class A2AAgentAdapter:
     """Adapter that bridges agentique to A2A-protocol agents.
 
     Implements the ``AgentAdapter`` protocol via structural subtyping.
+
+    Args:
+        agents: Mapping of agent name to AgentInfo.
+        client_pool: Pool managing A2A SDK client instances.
+        card_parser: Parser for extracting MCP components from agent cards.
+        push_notification_url: Callback URL for push notification delivery.
+        retry_on_disconnect: Enable automatic task resubscription on SSE drops.
+        max_resubscribe_attempts: Maximum resubscription attempts before failing.
     """
 
     def __init__(
@@ -52,10 +68,16 @@ class A2AAgentAdapter:
         *,
         client_pool: A2AClientPool | None = None,
         card_parser: A2ACardParser | None = None,
+        push_notification_url: str | None = None,
+        retry_on_disconnect: bool = True,
+        max_resubscribe_attempts: int = 3,
     ) -> None:
         self._agents = dict(agents)
         self._pool = client_pool or A2AClientPool()
         self._parser = card_parser or A2ACardParser()
+        self._push_url = push_notification_url
+        self._retry_on_disconnect = retry_on_disconnect
+        self._max_resubscribe = max_resubscribe_attempts
 
     # ---- AgentAdapter protocol ----
 
@@ -98,18 +120,155 @@ class A2AAgentAdapter:
         ):
             yield event
 
-    async def get_agent_card(self, agent_id: str) -> Any | None:
-        """Fetch the raw agent card for *agent_id*."""
+    async def get_agent_card(
+        self,
+        agent_id: str,
+        *,
+        authenticated: bool = False,
+    ) -> Any | None:
+        """Fetch the agent card for *agent_id*.
+
+        Args:
+            agent_id: Agent identifier.
+            authenticated: If True, attempt to fetch the extended
+                (authenticated) agent card when the agent supports it.
+
+        Returns:
+            The raw agent card object, or None if not available.
+        """
         info = self._require_agent(agent_id)
         client = await self._pool.get(info.base_url)
+
+        # Try fetching the card
         getter = getattr(client, "get_card", None)
-        if callable(getter):
-            result = getter()
-            return await result if inspect.isawaitable(result) else result
-        return None
+        if not callable(getter):
+            return None
+
+        result = getter()
+        card = await result if inspect.isawaitable(result) else result
+
+        if card is None:
+            return None
+
+        # Check if extended card is available and requested
+        if authenticated:
+            supports_extended = getattr(
+                card, "supports_authenticated_extended_card", False,
+            )
+            if supports_extended:
+                extended = await self._fetch_extended_card(client)
+                if extended is not None:
+                    return extended
+
+        return card
 
     async def close(self) -> None:
         await self._pool.close()
+
+    # ---- Push notification support ----
+
+    async def configure_push_notifications(
+        self,
+        agent_id: str,
+        task_id: str,
+        callback_url: str | None = None,
+    ) -> bool:
+        """Configure push notifications for a task on the A2A agent.
+
+        Args:
+            agent_id: Target agent.
+            task_id: Task to configure notifications for.
+            callback_url: URL where the agent should POST task updates.
+                Falls back to the adapter-level ``push_notification_url``.
+
+        Returns:
+            True if push notifications were configured successfully.
+        """
+        url = callback_url or self._push_url
+        if not url:
+            logger.debug("No push notification URL configured")
+            return False
+
+        info = self._require_agent(agent_id)
+        client = await self._pool.get(info.base_url)
+
+        try:
+            push_config = PushNotificationConfig(
+                url=url,
+                id=str(uuid4()),
+                token=str(uuid4()),
+            )
+
+            # Use the client's push notification API if available
+            set_push = getattr(client, "set_push_notification_config", None)
+            if callable(set_push):
+                result = set_push(task_id, push_config)
+                if inspect.isawaitable(result):
+                    await result
+                logger.info(
+                    "Push notifications configured for task %s on agent %s",
+                    task_id, agent_id,
+                )
+                return True
+
+            logger.debug(
+                "Agent '%s' client does not support push notification config",
+                agent_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to configure push notifications for task %s",
+                task_id, exc_info=True,
+            )
+
+        return False
+
+    # ---- Task resubscription ----
+
+    async def resubscribe(
+        self,
+        agent_id: str,
+        task_id: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Resubscribe to a task's event stream after disconnection.
+
+        Uses A2A's ``tasks/resubscribe`` method for resilient streaming.
+
+        Args:
+            agent_id: Agent that owns the task.
+            task_id: Task ID to resubscribe to.
+
+        Yields:
+            AgentEvent instances from the resumed stream.
+        """
+        info = self._require_agent(agent_id)
+        client = await self._pool.get(info.base_url)
+
+        resubscribe_fn = getattr(client, "resubscribe", None)
+        if not callable(resubscribe_fn):
+            logger.warning(
+                "Client for agent '%s' does not support resubscription",
+                agent_id,
+            )
+            return
+
+        try:
+            params = TaskIdParams(id=task_id)
+            result = resubscribe_fn(params)
+            if inspect.isawaitable(result):
+                result = await result
+
+            if hasattr(result, "__aiter__"):
+                async for raw_event in result:
+                    yield self._translate_event(raw_event)
+            else:
+                yield self._translate_event(result)
+
+        except Exception:
+            logger.warning(
+                "Resubscription failed for task %s on agent %s",
+                task_id, agent_id, exc_info=True,
+            )
 
     # ---- internal helpers ----
 
@@ -154,6 +313,31 @@ class A2AAgentAdapter:
         )
         return SendStreamingMessageRequest(id=str(uuid4()), params=payload)
 
+    async def _fetch_extended_card(self, client: Any) -> Any | None:
+        """Attempt to fetch the authenticated extended agent card."""
+        try:
+            # Check for extended card retrieval methods
+            get_extended = getattr(
+                client, "get_authenticated_extended_card", None,
+            )
+            if callable(get_extended):
+                result = get_extended()
+                return await result if inspect.isawaitable(result) else result
+
+            # Some SDK versions use get_card with auth param
+            get_card = getattr(client, "get_card", None)
+            if callable(get_card):
+                sig = inspect.signature(get_card)
+                if "authenticated" in sig.parameters or "extended" in sig.parameters:
+                    result = get_card(authenticated=True)
+                    return await result if inspect.isawaitable(result) else result
+
+        except Exception:
+            logger.debug(
+                "Failed to fetch extended agent card", exc_info=True,
+            )
+        return None
+
     async def _iter_events(
         self,
         client: Any,
@@ -162,14 +346,65 @@ class A2AAgentAdapter:
         metadata: dict[str, Any],
         streaming: bool,
     ) -> AsyncIterator[AgentEvent]:
+        last_task_id: str | None = None
+
         if hasattr(client, "send_message_streaming") and streaming:
             request = self._build_streaming_request(message, metadata)
-            iterator = client.send_message_streaming(request)
-            if inspect.isawaitable(iterator):
-                iterator = await iterator
-            async for raw_event in iterator:
-                yield self._translate_event(raw_event)
-            return
+            attempt = 0
+
+            while True:
+                try:
+                    iterator = client.send_message_streaming(request)
+                    if inspect.isawaitable(iterator):
+                        iterator = await iterator
+                    async for raw_event in iterator:
+                        event = self._translate_event(raw_event)
+                        if event.task_id:
+                            last_task_id = event.task_id
+                        yield event
+                    return  # Stream completed normally
+
+                except (ConnectionError, OSError) as exc:
+                    # SSE disconnection — try resubscription
+                    attempt += 1
+                    if (
+                        not self._retry_on_disconnect
+                        or attempt > self._max_resubscribe
+                        or not last_task_id
+                    ):
+                        raise
+
+                    logger.warning(
+                        "Stream disconnected (attempt %d/%d), "
+                        "resubscribing to task %s",
+                        attempt, self._max_resubscribe, last_task_id,
+                    )
+
+                    resubscribe_fn = getattr(client, "resubscribe", None)
+                    if not callable(resubscribe_fn):
+                        raise
+
+                    try:
+                        params = TaskIdParams(id=last_task_id)
+                        result = resubscribe_fn(params)
+                        if inspect.isawaitable(result):
+                            result = await result
+
+                        if hasattr(result, "__aiter__"):
+                            async for raw_event in result:
+                                event = self._translate_event(raw_event)
+                                yield event
+                            return  # Resubscription completed
+                        else:
+                            yield self._translate_event(result)
+                            return
+                    except Exception as resub_exc:
+                        logger.warning(
+                            "Resubscription failed: %s", resub_exc,
+                        )
+                        if attempt >= self._max_resubscribe:
+                            raise exc from resub_exc
+                        continue
 
         # Non-streaming fallback
         request = self._build_request(message, metadata)

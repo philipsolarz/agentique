@@ -1,6 +1,7 @@
 """Bridge layer components for routing, provider mapping, and task state."""
 
 from .context_manager import ContextManager
+from .fastmcp_middleware import AgentiqueMiddleware
 from .middleware import (
     ErrorMappingMiddleware,
     LoggingMiddleware,
@@ -17,11 +18,14 @@ from .router import (
     RoutingStrategy,
     WeightedKeywordRouter,
 )
+from .storage import InMemoryTaskStore, TaskStore
 from .task_manager import TaskManager
 
 __all__ = [
+    "AgentiqueMiddleware",
     "ContextManager",
     "ErrorMappingMiddleware",
+    "InMemoryTaskStore",
     "LoggingMiddleware",
     "MetricsMiddleware",
     "MiddlewareChain",
@@ -32,6 +36,7 @@ __all__ = [
     "KeywordRouter",
     "LLMRouter",
     "RoutingStrategy",
+    "TaskStore",
     "WeightedKeywordRouter",
     "TaskManager",
 ]

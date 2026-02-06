@@ -1,6 +1,6 @@
 [project]
 name = "agentique"
-version = "0.3.0"
+version = "0.4.0"
 description = "Protocol-agnostic bridge between MCP clients and any agent ecosystem."
 readme = "README.md"
 requires-python = ">=3.12"

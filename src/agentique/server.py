@@ -5,7 +5,7 @@ A2A (or other protocol) agents. The server exposes:
 
     - ``agent``  — send a message and stream the response
     - ``agents`` — list available agents
-    - ``task``   — query task state for transparency
+    - ``task``   — query task state
     - ``inspect`` — view an agent's internal structure
 
 Design principles:
@@ -13,6 +13,15 @@ Design principles:
     - Agent-centric (agents are the stars, not the bridge)
     - Real-time interactivity (streaming by default)
     - Preserve agent semantics and structure visibility
+
+Phase 2 integration features:
+    - FastMCP Middleware (AgentiqueMiddleware) for server-level hooks
+    - Transform support (Namespace, Visibility) for agent isolation
+    - Elicitation for input-required A2A task states
+    - Structured content via ToolResult
+    - TaskConfig for fine-grained background task control
+    - Lifespan composition for multi-adapter startup/shutdown
+    - OpenTelemetry span attributes
 """
 
 from __future__ import annotations
@@ -24,9 +33,11 @@ from uuid import uuid4
 
 from fastmcp import Context, FastMCP
 from fastmcp.dependencies import CurrentContext
+from fastmcp.tools.tool import ToolResult
 
 from .core.config import AgentiqueConfig
 from .core.events import AsyncEventEmitter
+from .core.telemetry import set_span_attribute, trace_agent_call
 from .core.types import (
     AgentEvent,
     AgentHierarchy,
@@ -37,6 +48,7 @@ from .core.types import (
 )
 from .adapters.a2a import A2AAgentAdapter, A2AClientPool, A2ACardParser
 from .bridge.context_manager import ContextManager
+from .bridge.fastmcp_middleware import AgentiqueMiddleware
 from .bridge.middleware import (
     ErrorMappingMiddleware,
     LoggingMiddleware,
@@ -44,6 +56,7 @@ from .bridge.middleware import (
 )
 from .bridge.provider import AgentProvider
 from .bridge.router import AgentRouter
+from .bridge.storage import InMemoryTaskStore, TaskStore
 from .bridge.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -58,6 +71,9 @@ def create_server(
     config: AgentiqueConfig | None = None,
     events: AsyncEventEmitter | None = None,
     middleware: list[Any] | None = None,
+    task_store: TaskStore | None = None,
+    transforms: list[Any] | None = None,
+    namespace: str | None = None,
 ) -> FastMCP:
     """Create a FastMCP server bridging MCP clients to agent backends.
 
@@ -69,6 +85,9 @@ def create_server(
         config: Server configuration.
         events: Event emitter for lifecycle hooks.
         middleware: List of middleware instances for the bridge chain.
+        task_store: Pluggable storage backend for task persistence.
+        transforms: List of FastMCP Transform instances to apply.
+        namespace: Optional namespace prefix for all agent tools.
 
     Returns:
         A fully configured ``FastMCP`` server instance.
@@ -101,7 +120,7 @@ def create_server(
         prefetch_cards=config.prefetch_cards,
     )
 
-    # Build middleware chain
+    # Build bridge middleware chain
     chain = MiddlewareChain()
     chain.add(LoggingMiddleware())
     chain.add(ErrorMappingMiddleware())
@@ -115,8 +134,20 @@ def create_server(
     # Build server
     mcp = FastMCP(config.name, providers=[provider])
 
-    # Task manager
-    tasks = TaskManager()
+    # Add FastMCP-level middleware
+    mcp.add_middleware(AgentiqueMiddleware(emitter=emitter))
+
+    # Apply transforms
+    if namespace:
+        from fastmcp.server.transforms import Namespace
+        mcp.add_transform(Namespace(namespace))
+
+    if transforms:
+        for transform in transforms:
+            mcp.add_transform(transform)
+
+    # Task manager with pluggable storage
+    tasks = TaskManager(store=task_store or InMemoryTaskStore())
 
     # ---- Core tools ----
 
@@ -162,6 +193,11 @@ def create_server(
             resolved = await router.aresolve(
                 name=target, message=message, ctx=ctx,
             )
+
+            # OpenTelemetry tracing
+            set_span_attribute("agentique.agent_name", resolved.name)
+            set_span_attribute("agentique.task_id", task_id)
+
             bridge_ctx = BridgeContext.from_fastmcp_context(ctx)
             if metadata.get("conversation_history"):
                 bridge_ctx = bridge_ctx.replace(
@@ -192,6 +228,38 @@ def create_server(
                     if chunk.progress:
                         await ctx.report_progress(int(chunk.progress), 100)
 
+                # Handle input-required state via elicitation
+                if chunk.state == "input-required" and config.enable_elicitation:
+                    elicit_text = chunk.text or "The agent requires additional input."
+                    try:
+                        elicit_result = await ctx.elicit(
+                            elicit_text,
+                            response_type=None,
+                        )
+                        if hasattr(elicit_result, "data") and elicit_result.data:
+                            # Send the user's response back to the agent
+                            user_input = str(elicit_result.data)
+                            async for follow_event in adapter.stream_message(
+                                resolved.name, user_input, bridge_ctx,
+                            ):
+                                tracker.add_event(follow_event)
+                                follow_chunk = StreamChunk.from_event(
+                                    resolved.name, index, follow_event,
+                                )
+                                index += 1
+                                if follow_chunk.kind in {"message", "artifact"} and follow_chunk.text:
+                                    await emitter.emit("stream.chunk", chunk=follow_chunk)
+                                    yield follow_chunk.text
+                    except Exception as elicit_exc:
+                        logger.warning("Elicitation failed: %s", elicit_exc)
+
+                # Handle auth-required state
+                if chunk.state == "auth-required":
+                    await ctx.warning(
+                        "Agent requires authentication. "
+                        "Provide credentials via context metadata."
+                    )
+
                 # Yield content
                 if chunk.kind in {"message", "artifact"} and chunk.text:
                     await emitter.emit("stream.chunk", chunk=chunk)
@@ -200,6 +268,8 @@ def create_server(
         finally:
             if not tracker.state.is_terminal:
                 tracker.transition(TaskState.completed)
+
+            set_span_attribute("agentique.task_state", tracker.state.value)
 
             # Persist conversation
             all_text = " ".join(
@@ -215,15 +285,19 @@ def create_server(
             await emitter.emit("task.completed", task_id=task_id)
 
     @mcp.tool(name="agents")
-    def agents_tool() -> list[dict[str, Any]]:
+    def agents_tool() -> ToolResult:
         """List available A2A agents and their capabilities."""
-        return [a.to_dict() for a in router.list_agents()]
+        agents_data = [a.to_dict() for a in router.list_agents()]
+        return ToolResult(
+            content=json.dumps(agents_data, indent=2),
+            structured_content={"agents": agents_data},
+        )
 
     @mcp.tool(name="task")
     async def task_tool(
         id: str,
         ctx: Context = CurrentContext(),
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         """Query the state of a task.
 
         Args:
@@ -231,14 +305,22 @@ def create_server(
         """
         tracker = await tasks.get_or_none(id)
         if tracker:
-            return tracker.to_dict()
-        return {"error": f"Task {id} not found", "task_id": id}
+            data = tracker.to_dict()
+            return ToolResult(
+                content=json.dumps(data, indent=2),
+                structured_content=data,
+            )
+        error_data = {"error": f"Task {id} not found", "task_id": id}
+        return ToolResult(
+            content=json.dumps(error_data),
+            structured_content=error_data,
+        )
 
     @mcp.tool(name="inspect")
     async def inspect_tool(
         name: str,
         ctx: Context = CurrentContext(),
-    ) -> dict[str, Any]:
+    ) -> ToolResult:
         """Inspect an agent's internal structure (sub-agents, tools).
 
         Args:
@@ -247,25 +329,38 @@ def create_server(
         try:
             card = await provider.get_agent_card(name)
             if not card:
-                return {"error": f"Agent '{name}' not found", "agent": name}
+                error_data = {"error": f"Agent '{name}' not found", "agent": name}
+                return ToolResult(
+                    content=json.dumps(error_data),
+                    structured_content=error_data,
+                )
             hierarchy = card_parser.build_hierarchy(name, card)
-            return hierarchy.to_dict()
+            data = hierarchy.to_dict()
+            return ToolResult(
+                content=json.dumps(data, indent=2),
+                structured_content=data,
+            )
         except Exception as exc:
             await ctx.error(f"Failed to inspect agent: {exc}")
-            return {"error": str(exc), "agent": name}
+            error_data = {"error": str(exc), "agent": name}
+            return ToolResult(
+                content=json.dumps(error_data),
+                structured_content=error_data,
+            )
 
-    # ---- Background task support ----
+    # ---- Background task support with TaskConfig ----
 
     if config.enable_background_tasks:
         try:
-            from fastmcp.dependencies import Progress
-            from fastmcp.tools.tool import ToolResult
+            from fastmcp.server.tasks.config import TaskConfig
 
-            @mcp.tool(name="agent_background", task=True)
+            @mcp.tool(
+                name="agent_background",
+                task=TaskConfig(mode="optional"),
+            )
             async def agent_background_tool(
                 message: str,
                 target: str | None = None,
-                progress: Progress = Progress(),
             ) -> ToolResult:
                 """Send a message as a background task.
 
@@ -276,14 +371,16 @@ def create_server(
                     target: Optional agent name
                 """
                 from fastmcp.server.dependencies import get_context
-                bg_ctx = get_context()
 
-                await progress.set_total(100)
-                await progress.set_message("Connecting to agent...")
+                bg_ctx = get_context()
 
                 task_id = str(uuid4())
                 tracker = await tasks.create(task_id)
                 resolved = router.resolve(name=target, message=message)
+
+                set_span_attribute("agentique.agent_name", resolved.name)
+                set_span_attribute("agentique.task_id", task_id)
+
                 bridge_ctx = BridgeContext.from_fastmcp_context(bg_ctx)
 
                 chunks: list[str] = []
@@ -294,17 +391,13 @@ def create_server(
                     ):
                         tracker.add_event(event)
                         idx += 1
-                        pct = min(10 + idx * 5, 90)
-                        await progress.set_progress(pct)
                         if event.text:
                             chunks.append(event.text)
-                            preview = event.text[:50]
-                            await progress.set_message(f"Processing: {preview}")
 
-                    await progress.set_progress(100)
-                    await progress.set_message("Complete")
                     if not tracker.state.is_terminal:
                         tracker.transition(TaskState.completed)
+
+                    set_span_attribute("agentique.task_state", tracker.state.value)
 
                     return ToolResult(
                         content=" ".join(chunks).strip(),
@@ -317,10 +410,75 @@ def create_server(
                     )
                 except Exception as exc:
                     tracker.transition(TaskState.failed, str(exc))
+                    set_span_attribute("agentique.task_state", "failed")
                     raise
 
         except ImportError:
-            pass  # Background tasks require fastmcp[tasks]
+            # Fallback: use task=True if TaskConfig is not available
+            try:
+                from fastmcp.dependencies import Progress
+
+                @mcp.tool(name="agent_background", task=True)
+                async def agent_background_tool(
+                    message: str,
+                    target: str | None = None,
+                    progress: Any = Progress(),
+                ) -> ToolResult:
+                    """Send a message as a background task.
+
+                    Returns immediately with a task ID queryable via ``task``.
+
+                    Args:
+                        message: The message to send
+                        target: Optional agent name
+                    """
+                    from fastmcp.server.dependencies import get_context
+
+                    bg_ctx = get_context()
+
+                    await progress.set_total(100)
+                    await progress.set_message("Connecting to agent...")
+
+                    task_id = str(uuid4())
+                    tracker = await tasks.create(task_id)
+                    resolved = router.resolve(name=target, message=message)
+                    bridge_ctx = BridgeContext.from_fastmcp_context(bg_ctx)
+
+                    chunks: list[str] = []
+                    idx = 0
+                    try:
+                        async for event in adapter.stream_message(
+                            resolved.name, message, bridge_ctx,
+                        ):
+                            tracker.add_event(event)
+                            idx += 1
+                            pct = min(10 + idx * 5, 90)
+                            await progress.set_progress(pct)
+                            if event.text:
+                                chunks.append(event.text)
+                                preview = event.text[:50]
+                                await progress.set_message(f"Processing: {preview}")
+
+                        await progress.set_progress(100)
+                        await progress.set_message("Complete")
+                        if not tracker.state.is_terminal:
+                            tracker.transition(TaskState.completed)
+
+                        return ToolResult(
+                            content=" ".join(chunks).strip(),
+                            structured_content={
+                                "task_id": task_id,
+                                "agent": resolved.name,
+                                "state": tracker.state.value,
+                                "event_count": idx,
+                            },
+                        )
+                    except Exception as exc:
+                        tracker.transition(TaskState.failed, str(exc))
+                        raise
+
+            except ImportError:
+                pass  # Background tasks require fastmcp[tasks]
 
     # ---- Catalog resource ----
 

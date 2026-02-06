@@ -44,6 +44,7 @@ from .core.errors import (
 from .core.events import AsyncEventEmitter, EventHook
 from .core.protocols import AdapterFactory, AgentAdapter, BridgeMiddleware, ToolMapper
 from .core.registry import create_adapter, discover_adapters, list_protocols, register_adapter
+from .core.telemetry import get_tracer, set_span_attribute, trace_agent_call
 from .core.tool_mapper import DefaultToolMapper, FlatHierarchyToolMapper, PerSkillToolMapper
 
 # Bridge layer
@@ -64,6 +65,8 @@ from .bridge.middleware import (
     RateLimitMiddleware,
 )
 from .bridge.context_manager import ContextManager
+from .bridge.fastmcp_middleware import AgentiqueMiddleware
+from .bridge.storage import InMemoryTaskStore, TaskStore
 
 # Server factory
 from .server import create_server
@@ -104,6 +107,10 @@ __all__ = [
     "discover_adapters",
     "list_protocols",
     "register_adapter",
+    # Telemetry
+    "get_tracer",
+    "set_span_attribute",
+    "trace_agent_call",
     # Tool mappers
     "DefaultToolMapper",
     "FlatHierarchyToolMapper",
@@ -111,10 +118,13 @@ __all__ = [
     # Bridge
     "AgentProvider",
     "AgentRouter",
+    "AgentiqueMiddleware",
     "ContextManager",
     "DirectRouter",
+    "InMemoryTaskStore",
     "KeywordRouter",
     "LLMRouter",
+    "TaskStore",
     "WeightedKeywordRouter",
     "TaskManager",
     # Middleware

@@ -103,6 +103,70 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 - `mock_agent_info()` — factory for test `AgentInfo` instances
 - `mock_agent_card()` — factory for test agent card dictionaries
 
+### Phase 2 — FastMCP 3.0 Deep Integration (Complete)
+
+**FastMCP Middleware integration** — `AgentiqueMiddleware` extends FastMCP 3.0's native `Middleware` class with `on_call_tool` and `on_list_tools` hooks. Automatically added by `create_server()`. Provides:
+- Event emission on tool calls (`tool.called` / `tool.completed` / `tool.failed`) via `AsyncEventEmitter`
+- Request timing and logging at the FastMCP server level
+- OpenTelemetry span attribute injection when tracing is active
+
+**Transform support** — `create_server()` accepts `namespace` and `transforms` parameters:
+- `namespace="prefix"` applies FastMCP's `Namespace` transform for tool name isolation
+- `transforms=[...]` applies arbitrary FastMCP Transform instances (e.g., `Visibility` for session-level agent control, `ToolTransform` for renaming)
+- Works with `Visibility`, `Namespace`, `ResourcesAsTools`, `PromptsAsTools`, and custom transforms
+
+**Elicitation for input-required states** — When an A2A agent returns `input-required` task state during streaming, the `agent` tool uses `ctx.elicit()` to prompt the MCP client for additional input. The user's response is sent back to the agent, continuing the conversation loop. Handles `AcceptedElicitation`, `DeclinedElicitation`, and `CancelledElicitation` gracefully.
+
+**Structured sampling in LLMRouter** — `LLMRouter.aselect()` now uses `ctx.sample()` with `result_type` (list of agent names) for structured agent selection. Falls back gracefully:
+1. First attempts structured sampling with `result_type=agent_names`
+2. If `TypeError` (structured not supported), falls back to plain-text sampling
+3. If all sampling fails, falls back to `KeywordRouter`
+
+**Structured content via ToolResult** — The `agents`, `task`, and `inspect` tools now return `ToolResult` with both `content` (JSON string for backward compatibility) and `structured_content` (dict for MCP's `outputSchema`/`structuredContent` spec). The `agent_background` tool also returns structured results with `task_id`, `agent`, `state`, and `event_count`.
+
+**TaskConfig API** — Background task tool (`agent_background`) uses `TaskConfig(mode="optional")` from `fastmcp.server.tasks.config` for fine-grained control. Falls back to `task=True` with `Progress` dependency if `TaskConfig` is unavailable.
+
+**OpenTelemetry integration** — New `agentique.core.telemetry` module:
+- `get_tracer()` returns an agentique OTel tracer (no-op if SDK not installed)
+- `trace_agent_call()` context manager creates spans with `agentique.agent_name`, `agentique.protocol`, `agentique.task_id`, and `agentique.task_state` attributes
+- `set_span_attribute()` adds attributes to the current active span
+- `AgentiqueMiddleware` injects `agentique.tool_name` and `agentique.protocol` on tool calls
+- Zero overhead when OpenTelemetry SDK is not installed (uses no-op fallbacks)
+
+**Storage backend abstraction** — New `TaskStore` protocol in `agentique.bridge.storage`:
+- `InMemoryTaskStore` — default in-memory implementation
+- `TaskManager` accepts a pluggable `store` parameter
+- `TaskStore` protocol defines `save()`, `load()`, `delete()`, `list_ids()` async methods
+- Production deployments can implement Redis, DynamoDB, filesystem, or other backends
+- `create_server()` accepts `task_store` parameter
+
+**Lifespan composition support** — FastMCP's lifespan pipe operator (`lifespan_a | lifespan_b`) is available for composing startup/shutdown logic across multiple adapter connections. The `AgentProvider` uses FastMCP's `Provider.lifespan()` for adapter lifecycle management. The server factory is structured to support composition via the `providers` parameter.
+
+### Phase 3 — A2A Protocol Completeness (Partial)
+
+**Push notification support** — `A2AAgentAdapter.configure_push_notifications()` creates `PushNotificationConfig` instances and configures them on A2A agents via the SDK client:
+- Accepts per-task callback URLs or falls back to adapter-level `push_notification_url`
+- Generates unique notification IDs and tokens
+- Gracefully handles agents that don't support push notifications
+- `create_server()` can be configured with `push_notification_url` via the adapter
+
+**Task resubscription** — `A2AAgentAdapter.resubscribe()` reconnects to active task streams after SSE disconnection:
+- Uses A2A's `tasks/resubscribe` method via `TaskIdParams`
+- Streaming automatically retries on `ConnectionError`/`OSError` up to `max_resubscribe_attempts` (default: 3)
+- Configurable via `retry_on_disconnect` flag on the adapter
+- Translates resubscribed events through the same `_translate_event()` pipeline
+
+**Extended agent card support** — `A2AAgentAdapter.get_agent_card()` accepts an `authenticated` parameter:
+- Checks the `supports_authenticated_extended_card` flag on the public card
+- When supported, fetches the authenticated extended card via `get_authenticated_extended_card()`
+- Falls back to the public card when extended card is not available or not supported
+- Exposes additional skills/tools from authenticated cards
+
+**Auth-required and rejected state handling** — The `agent` tool in `server.py` handles A2A task states:
+- `input-required` → Uses `ctx.elicit()` to prompt MCP client for input, sends response back to agent
+- `auth-required` → Sends a warning via `ctx.warning()` informing the client to provide credentials
+- `rejected` → Tracked in `TaskState.rejected` (terminal state), properly handled by `TaskTracker`
+
 ### Test Coverage
 
 - `test_core.py` — TaskState, TaskTracker, AgentInfo, BridgeContext (including `.replace()`), AgentEvent, StreamChunk, AgentHierarchy, ContextMapping, Router, Events
@@ -113,6 +177,14 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 - `test_registry.py` — adapter registration, discovery, creation
 - `test_testing_utils.py` — MockAdapter, MockStreamingAdapter, RecordingMiddleware, factory helpers
 - `test_bridge.py` — end-to-end MCP→A2A integration tests
+- `test_fastmcp_middleware.py` — AgentiqueMiddleware event emission, tool name extraction, error handling, list_tools passthrough
+- `test_telemetry.py` — NoOpSpan, NoOpTracer, get_tracer caching, trace_agent_call context manager, set_span_attribute no-op safety
+- `test_storage.py` — InMemoryTaskStore CRUD, TaskStore protocol compliance, TaskManager with custom store, TaskManager default store
+- `test_adapter_extended.py` — Push notification config (custom URL, no URL), task resubscription, extended agent cards (basic, authenticated, no support), retry-on-disconnect
+- `test_server_phase2.py` — create_server new params (task_store, namespace, transforms, events), FastMCP middleware auto-registration, ToolResult structured content, TaskConfig API
+- `test_router_structured.py` — LLMRouter structured sampling, fallback to text sampling, complete failure fallback, aresolve with structured sampling
+
+**Total: 128 tests passing (1 skipped)**
 
 ---
 
@@ -120,50 +192,17 @@ All are decorated with `@runtime_checkable` for isinstance checks without inheri
 
 This section covers features from the research report that are not yet implemented, organized by priority and effort.
 
-### Phase 2 — FastMCP 3.0 Deep Integration (High Impact, Low-Medium Effort)
+### Phase 2 — Remaining FastMCP 3.0 Integration (Low-Medium Effort)
 
-**Transform classes for component modification** — FastMCP 3.0's `Transform` classes (`Namespace`, `ToolTransform`, `Visibility`, `ResourcesAsTools`, `PromptsAsTools`) are not yet used. Agentique should expose transform hooks so users can:
-- Apply `Namespace` transforms per agent to prevent tool name collisions
-- Use `Visibility` with session-level control (`ctx.enable_components()` / `ctx.disable_components()`) for dynamic agent availability
-- Apply custom `ToolTransform` instances for tool renaming
+**Dependency injection via `Depends()`** — The codebase manually constructs dependencies rather than using FastMCP 3.0's `Depends()` for clean injection of agent clients, configuration, and services into tools. This would allow declaring dependencies like `router: AgentRouter = Depends(get_router)`.
 
-**FastMCP Middleware integration** — While agentique has its own `MiddlewareChain` at the bridge layer, it does not yet use FastMCP 3.0's own `Middleware` class with `on_call_tool`, `on_list_tools`, and `on_read_resource` hooks. These should be used for server-level cross-cutting concerns.
+**Composition via mounting** — FastMCP's `mount()` could enable mounting separate bridges (A2A, HTTP, local) under a single MCP server with automatic namespace isolation. While `Namespace` transforms are now supported, full `mount()` composition for multi-bridge architectures is not yet implemented.
 
-**Dependency injection via `Depends()`** — The codebase manually constructs dependencies rather than using FastMCP 3.0's `Depends()` for clean injection of agent clients, configuration, and services into tools.
+### Phase 3 — Remaining A2A Protocol Completeness (Medium Effort)
 
-**OpenTelemetry integration** — No tracing spans are emitted. Should add `agentique.agent_name`, `agentique.protocol`, `agentique.task_state` attributes to FastMCP's built-in OpenTelemetry spans.
+**gRPC transport** — A2A SDK includes `GrpcTransport`. Agentique should support gRPC as a backend option via `ClientConfig(supported_transports=["grpc", "jsonrpc"])`. The `A2AClientPool` would need to accept `grpc_channel_factory` configuration.
 
-**Storage backends for task persistence** — TaskManager uses in-memory dicts. FastMCP 3.0 supports pluggable storage backends (Redis, DynamoDB, filesystem). Task state should use these for production persistence.
-
-**Elicitation with response types** — FastMCP 3.0's `ctx.elicit()` with Pydantic models is not yet used. Should enable structured confirmation dialogs for agent actions (e.g., when an A2A agent returns `input-required` state).
-
-**Sampling with tool loop** — `ctx.sample()` now supports `tools` and `tool_choice` parameters. The `LLMRouter` uses basic sampling but does not leverage the tool loop for structured agent selection via `result_type`.
-
-**Lifespan composition** — FastMCP's pipe operator (`lifespan_a | lifespan_b`) for composing startup/shutdown logic across multiple agent connections is not yet used.
-
-**Structured content** — Tools returning dicts/Pydantic models should use FastMCP's automatic structured JSON alongside traditional content, aligning with MCP's `outputSchema`/`structuredContent` spec.
-
-**`TaskConfig` API** — Currently uses `task=True` but should leverage `TaskConfig(mode="optional", poll_interval=timedelta(seconds=2))` for fine-grained control.
-
-**Composition via mounting** — FastMCP's `mount()` could enable mounting separate bridges (A2A, HTTP, local) under a single MCP server with automatic namespace isolation.
-
-### Phase 3 — A2A Protocol Completeness (Medium Impact, Moderate Effort)
-
-**Push notification support** — A2A supports webhook-based push notifications for long-running tasks (`PushNotificationConfig`, JWT signing). Agentique should:
-- Accept push notification config from MCP clients
-- Configure push notifications on A2A servers
-- Translate incoming webhooks into MCP `notifications/tasks/status`
-- Use SDK's `InMemoryPushNotifier` and `PushNotificationConfigStore`
-
-**Task resubscription** — A2A's `tasks/resubscribe` method allows reconnecting to active streams after disconnection. The bridge should implement reconnection logic instead of failing on SSE drops.
-
-**gRPC transport** — A2A SDK includes `GrpcTransport`. Agentique should support gRPC as a backend option via `ClientConfig(ordered_transports=["gRPC", "JSONRPC"])`.
-
-**Extended agent cards** — A2A distinguishes between public cards (unauthenticated, at `/.well-known/agent-card.json`) and extended cards (authenticated, revealing additional skills). Agentique should fetch extended cards when credentials are available.
-
-**A2A extensions mechanism** — Users should be able to define custom A2A extensions that propagate to agents and are received back in responses (e.g., a tracing extension carrying OpenTelemetry span context).
-
-**Auth-required and rejected state handling** — A2A's `auth-required` and `rejected` task states should be translated into MCP elicitation or appropriate error flows, not just generic errors.
+**A2A extensions mechanism** — Users should be able to define custom A2A extensions that propagate to agents and are received back in responses (e.g., a tracing extension carrying OpenTelemetry span context). The SDK supports extensions via `AgentExtension`, `X-A2A-Extensions` header, and `ClientConfig.extensions`.
 
 ### Phase 4 — Ecosystem & Community (High Long-Term Impact, Higher Effort)
 
@@ -187,7 +226,20 @@ This section covers features from the research report that are not yet implement
 
 ## File Inventory
 
-### New Files
+### New Files (Phase 2/3)
+| File | Description |
+|------|-------------|
+| `src/agentique/bridge/fastmcp_middleware.py` | AgentiqueMiddleware — FastMCP 3.0 native middleware with event emission, logging, and OTel support |
+| `src/agentique/bridge/storage.py` | TaskStore protocol and InMemoryTaskStore for pluggable task persistence |
+| `src/agentique/core/telemetry.py` | OpenTelemetry integration — tracer, span attributes, trace_agent_call context manager |
+| `tests/test_fastmcp_middleware.py` | Tests for AgentiqueMiddleware event emission and tool name extraction |
+| `tests/test_telemetry.py` | Tests for OTel tracer, NoOp fallbacks, trace context manager |
+| `tests/test_storage.py` | Tests for InMemoryTaskStore, TaskStore protocol, TaskManager with custom store |
+| `tests/test_adapter_extended.py` | Tests for push notifications, resubscription, extended cards, retry-on-disconnect |
+| `tests/test_server_phase2.py` | Tests for create_server new params, transforms, ToolResult, TaskConfig |
+| `tests/test_router_structured.py` | Tests for LLMRouter structured sampling with result_type |
+
+### New Files (Phase 1 — previously reported)
 | File | Description |
 |------|-------------|
 | `src/agentique/core/registry.py` | Adapter registry with entry-point discovery |
@@ -205,16 +257,23 @@ This section covers features from the research report that are not yet implement
 | `tests/test_registry.py` | Adapter registry tests |
 | `tests/test_testing_utils.py` | Testing utility tests |
 
-### Modified Files
+### Modified Files (Phase 2/3)
 | File | Changes |
 |------|---------|
-| `src/agentique/__init__.py` | Exports new components |
-| `src/agentique/core/__init__.py` | Exports new types, mappers, registry |
+| `src/agentique/__init__.py` | Exports new components: AgentiqueMiddleware, InMemoryTaskStore, TaskStore, telemetry functions |
+| `src/agentique/core/__init__.py` | Exports telemetry module (get_tracer, set_span_attribute, trace_agent_call) |
+| `src/agentique/bridge/__init__.py` | Exports AgentiqueMiddleware, InMemoryTaskStore, TaskStore |
+| `src/agentique/bridge/router.py` | LLMRouter enhanced with structured sampling via `result_type` |
+| `src/agentique/bridge/task_manager.py` | Accepts pluggable `TaskStore` backend (default: `InMemoryTaskStore`) |
+| `src/agentique/adapters/a2a/adapter.py` | Added push notification config, task resubscription, extended card support, retry-on-disconnect |
+| `src/agentique/server.py` | Integrated FastMCP middleware, transforms, elicitation, ToolResult, TaskConfig, OTel, auth-required handling |
+| `pyproject.toml` | Bumped version to 0.4.0 |
+
+### Modified Files (Phase 1 — previously reported)
+| File | Changes |
+|------|---------|
 | `src/agentique/core/types.py` | Added `ContextMapping`, `BridgeContext.replace()` |
 | `src/agentique/core/protocols.py` | Added `AdapterFactory` protocol |
-| `src/agentique/bridge/__init__.py` | Exports middleware, context manager, new routers |
 | `src/agentique/bridge/router.py` | Added `LLMRouter`, `WeightedKeywordRouter`, `aresolve()`, `unregister()` |
 | `src/agentique/adapters/__init__.py` | Registers built-in adapters via `@register_adapter` |
-| `src/agentique/server.py` | Integrates middleware chain, context manager, `aresolve()` |
 | `tests/test_core.py` | Added `BridgeContext.replace()` and `ContextMapping` tests |
-| `pyproject.toml` | Added httpx dependency, entry points, bumped version to 0.3.0 |

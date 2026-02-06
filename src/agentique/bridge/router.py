@@ -147,6 +147,9 @@ class LLMRouter:
     ) -> AgentInfo:
         """Async routing via LLM sampling.
 
+        Uses ``ctx.sample()`` with ``result_type`` for structured agent
+        selection when available, falling back to plain-text sampling.
+
         Args:
             message: The user's message.
             available: List of available agents.
@@ -158,6 +161,7 @@ class LLMRouter:
         if ctx is None or not hasattr(ctx, "sample"):
             return self._fallback.select(message, available)
 
+        agent_names = [a.name for a in available]
         agent_descriptions = "\n".join(
             f"- {a.name}: {a.description or 'No description'} "
             f"(skills: {', '.join(a.skills) or 'none'})"
@@ -171,34 +175,61 @@ class LLMRouter:
         )
 
         try:
+            # Try structured sampling with result_type (list of agent names)
             result = await ctx.sample(
                 prompt,
                 system_prompt=self._system_prompt,
+                result_type=agent_names,
             )
-            # Extract text from sampling result
-            chosen_name = str(result).strip().lower()
+            # result_type=list[str] returns the selected agent name
+            chosen_name = str(result.result if hasattr(result, "result") else result).strip()
 
             for agent in available:
-                if agent.name.lower() == chosen_name:
+                if agent.name.lower() == chosen_name.lower():
                     logger.info(
-                        "LLM router selected agent '%s' for message",
+                        "LLM router (structured) selected agent '%s'",
                         agent.name,
                     )
                     return agent
 
-            # Fuzzy match: check if the LLM included extra text
-            for agent in available:
-                if agent.name.lower() in chosen_name:
-                    logger.info(
-                        "LLM router fuzzy-matched agent '%s'",
-                        agent.name,
-                    )
-                    return agent
+        except (TypeError, AttributeError):
+            # Structured sampling not supported — fall back to plain text
+            try:
+                result = await ctx.sample(
+                    prompt,
+                    system_prompt=self._system_prompt,
+                )
+                chosen_name = str(
+                    result.text if hasattr(result, "text") else result
+                ).strip().lower()
 
-            logger.warning(
-                "LLM router returned unknown agent '%s', falling back",
-                chosen_name,
-            )
+                for agent in available:
+                    if agent.name.lower() == chosen_name:
+                        logger.info(
+                            "LLM router selected agent '%s' for message",
+                            agent.name,
+                        )
+                        return agent
+
+                # Fuzzy match: check if the LLM included extra text
+                for agent in available:
+                    if agent.name.lower() in chosen_name:
+                        logger.info(
+                            "LLM router fuzzy-matched agent '%s'",
+                            agent.name,
+                        )
+                        return agent
+
+                logger.warning(
+                    "LLM router returned unknown agent '%s', falling back",
+                    chosen_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "LLM routing failed (%s), falling back to keyword router",
+                    exc,
+                )
+
         except Exception as exc:
             logger.warning(
                 "LLM routing failed (%s), falling back to keyword router",
