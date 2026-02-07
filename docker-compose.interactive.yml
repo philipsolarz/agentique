@@ -1,0 +1,100 @@
+# Docker Compose configuration for interactive testing with MCP clients
+# This setup exposes the MCP server for manual testing via Claude CLI, GitHub Copilot, etc.
+
+services:
+  # Advanced demo A2A agent for comprehensive feature testing
+  a2a-demo-agent:
+    build:
+      context: .
+      dockerfile: docker/demo-agent/Dockerfile
+    container_name: agentique-interactive-demo-agent
+    ports:
+      - "9000:9000"
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: 9000
+      A2A_BASE_URL: http://a2a-demo-agent:9000
+      # Optional: Google API key for real ADK agent (if needed)
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    volumes:
+      - ./tests/agents:/app/agents:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - agentique-interactive
+
+  # MCP Server (Agentique Bridge) - Exposed for interactive testing
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-interactive-mcp-server
+    ports:
+      - "8000:8000" # HTTP mode
+    stdin_open: true # Enable stdin for stdio mode
+    tty: true # Enable TTY
+    depends_on:
+      a2a-demo-agent:
+        condition: service_healthy
+    environment:
+      # Transport configuration
+      AGENTIQUE_TRANSPORT: http # Can be 'http' or 'stdio'
+      AGENTIQUE_HOST: 0.0.0.0
+      AGENTIQUE_PORT: 8000
+
+      # Agent configuration
+      A2A_AGENT_URL: http://a2a-demo-agent:9000
+
+      # Enable debug logging for interactive testing
+      LOG_LEVEL: DEBUG
+      AGENTIQUE_DEBUG: "1"
+
+    volumes:
+      - ./:/app:ro # Read-only mount for safety
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      - agentique-interactive
+
+    # Labels for easy identification
+    labels:
+      com.agentique.purpose: "interactive-testing"
+      com.agentique.mcp.client: "compatible"
+
+networks:
+  agentique-interactive:
+    driver: bridge
+    name: agentique-interactive
+
+# Usage:
+# 1. Start the stack:
+#    docker compose -f docker-compose.interactive.yml up -d --wait
+#
+# 2. Verify health:
+#    curl http://localhost:8000/health
+#    curl http://localhost:9000/.well-known/agent-card.json
+#
+# 3. Configure your MCP client (see examples/mcp-clients/README.md)
+#
+# 4. Test via Claude CLI:
+#    claude "List available agents"
+#    claude "Send a message to the demo agent: /help"
+#
+# 5. Stop the stack:
+#    docker compose -f docker-compose.interactive.yml down

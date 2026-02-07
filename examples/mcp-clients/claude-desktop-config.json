@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "agentique-bridge": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "agentique-interactive-mcp-server",
+        "python",
+        "-m",
+        "agentique.server",
+        "--stdio"
+      ],
+      "description": "Agentique - Bridge to A2A agents via MCP"
+    }
+  }
+}
