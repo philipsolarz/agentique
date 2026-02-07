@@ -1,23 +1,28 @@
 # Docker Compose configuration for interactive testing with MCP clients
 # This setup exposes the MCP server for manual testing via Claude CLI, GitHub Copilot, etc.
+#
+# Prerequisites:
+#   - GOOGLE_API_KEY must be set in .env or environment (required for the LLM-powered agent)
+#   - Docker and Docker Compose installed
 
 services:
-  # Advanced demo A2A agent for comprehensive feature testing
-  a2a-demo-agent:
+  # Real LLM-powered A2A agent built with Google ADK + Gemini
+  # Features: 7 sub-agents, natural language routing, 25+ tools, streaming, elicitation
+  a2a-agent:
     build:
       context: .
-      dockerfile: docker/demo-agent/Dockerfile
-    container_name: agentique-interactive-demo-agent
+      dockerfile: docker/a2a-test-agent/Dockerfile
+    container_name: agentique-interactive-agent
     ports:
       - "9000:9000"
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: 9000
-      A2A_BASE_URL: http://a2a-demo-agent:9000
-      # Optional: Google API key for real ADK agent (if needed)
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      A2A_BASE_URL: http://a2a-agent:9000
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      ADK_MODEL: ${ADK_MODEL:-gemini-2.0-flash}
     volumes:
-      - ./tests/agents:/app/agents:ro
+      - ./a2a_test_agent/agent_card.json:/app/agent_card.json:ro
     healthcheck:
       test:
         [
@@ -29,7 +34,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 10s
+      start_period: 15s
     networks:
       - agentique-interactive
 
@@ -44,7 +49,7 @@ services:
     stdin_open: true # Enable stdin for stdio mode
     tty: true # Enable TTY
     depends_on:
-      a2a-demo-agent:
+      a2a-agent:
         condition: service_healthy
     environment:
       # Transport configuration
@@ -53,7 +58,7 @@ services:
       AGENTIQUE_PORT: 8000
 
       # Agent configuration
-      A2A_AGENT_URL: http://a2a-demo-agent:9000
+      A2A_AGENT_URL: http://a2a-agent:9000
 
       # Enable debug logging for interactive testing
       LOG_LEVEL: DEBUG
@@ -83,18 +88,22 @@ networks:
     name: agentique-interactive
 
 # Usage:
-# 1. Start the stack:
+# 1. Set GOOGLE_API_KEY in .env or export it:
+#    echo "GOOGLE_API_KEY=your-key-here" > .env
+#
+# 2. Start the stack:
 #    docker compose -f docker-compose.interactive.yml up -d --wait
 #
-# 2. Verify health:
+# 3. Verify health:
 #    curl http://localhost:8000/health
 #    curl http://localhost:9000/.well-known/agent-card.json
 #
-# 3. Configure your MCP client (see examples/mcp-clients/README.md)
+# 4. Configure your MCP client (see examples/mcp-clients/README.md)
 #
-# 4. Test via Claude CLI:
+# 5. Test via Claude CLI:
 #    claude "List available agents"
-#    claude "Send a message to the demo agent: /help"
+#    claude "What is 15 times 7?"
+#    claude "Sort these items: banana, apple, cherry"
 #
-# 5. Stop the stack:
+# 6. Stop the stack:
 #    docker compose -f docker-compose.interactive.yml down

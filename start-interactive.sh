@@ -24,6 +24,21 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 echo -e "${GREEN}✓ Docker is running${NC}"
+
+# Check for GOOGLE_API_KEY
+if [ -z "$GOOGLE_API_KEY" ]; then
+    if [ -f .env ] && grep -q "GOOGLE_API_KEY" .env; then
+        echo -e "${GREEN}✓ GOOGLE_API_KEY found in .env${NC}"
+    else
+        echo -e "${RED}✗ GOOGLE_API_KEY is required for the LLM-powered agent${NC}"
+        echo -e "${YELLOW}  Set it via: export GOOGLE_API_KEY=your-key-here${NC}"
+        echo -e "${YELLOW}  Or add to .env: echo 'GOOGLE_API_KEY=your-key' > .env${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✓ GOOGLE_API_KEY is set${NC}"
+fi
+
 echo ""
 
 # Start the Docker Compose stack
@@ -45,21 +60,21 @@ else
     exit 1
 fi
 
-# Check demo agent
-echo -e "${YELLOW}Checking demo agent...${NC}"
+# Check A2A agent
+echo -e "${YELLOW}Checking A2A agent...${NC}"
 if curl -sf http://localhost:9000/.well-known/agent-card.json > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Demo agent is healthy${NC}"
+    echo -e "${GREEN}✓ A2A agent is healthy${NC}"
 else
-    echo -e "${RED}✗ Demo agent is not responding${NC}"
+    echo -e "${RED}✗ A2A agent is not responding${NC}"
     echo -e "${YELLOW}Checking logs:${NC}"
-    docker logs agentique-interactive-demo-agent --tail 20
+    docker logs agentique-interactive-agent --tail 20
     exit 1
 fi
 
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║                                                        ║${NC}"
-echo -e "${GREEN}║              Services are ready! 🎉                    ║${NC}"
+echo -e "${GREEN}║              Services are ready!                       ║${NC}"
 echo -e "${GREEN}║                                                        ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -67,7 +82,8 @@ echo ""
 # Show connection information
 echo -e "${BLUE}Connection Information:${NC}"
 echo -e "  MCP Server:  http://localhost:8000"
-echo -e "  Demo Agent:  http://localhost:9000"
+echo -e "  A2A Agent:   http://localhost:9000"
+echo -e "  Agent Card:  http://localhost:9000/.well-known/agent-card.json"
 echo ""
 
 echo -e "${BLUE}Quick Tests:${NC}"
@@ -102,30 +118,29 @@ echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━�
 echo -e "${BLUE}Demo Scenarios (try these in your MCP client)${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${GREEN}1. Get Help${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/help${NC}"
+echo -e "The A2A agent uses natural language - just ask it anything!"
 echo ""
-echo -e "${GREEN}2. Echo Test${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/echo Hello, world!${NC}"
+echo -e "${GREEN}1. Math & Calculations${NC}"
+echo -e "   ${YELLOW}\"What is 15 times 7?\"${NC}"
+echo -e "   ${YELLOW}\"Calculate the statistics for 10, 20, 30, 40, 50\"${NC}"
 echo ""
-echo -e "${GREEN}3. Streaming Response${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/stream Tell me a story${NC}"
+echo -e "${GREEN}2. Text Processing${NC}"
+echo -e "   ${YELLOW}\"Convert 'hello world' to uppercase\"${NC}"
+echo -e "   ${YELLOW}\"Count the words in this paragraph\"${NC}"
 echo ""
-echo -e "${GREEN}4. Calculator${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/calc 15 * 7${NC}"
+echo -e "${GREEN}3. Data Processing${NC}"
+echo -e "   ${YELLOW}\"Sort these items: banana, apple, cherry, date\"${NC}"
+echo -e "   ${YELLOW}\"Filter items containing 'a' from: cat, dog, bat, rat\"${NC}"
 echo ""
-echo -e "${GREEN}5. Multi-turn Conversation${NC}"
-echo -e "   Send: ${YELLOW}Remember my name is Alice${NC}"
-echo -e "   Then: ${YELLOW}What did I just tell you?${NC}"
+echo -e "${GREEN}4. Background Tasks${NC}"
+echo -e "   ${YELLOW}\"Run a background task called 'data migration'\"${NC}"
 echo ""
-echo -e "${GREEN}6. Error Handling${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/error${NC}"
+echo -e "${GREEN}5. User Interaction${NC}"
+echo -e "   ${YELLOW}\"I need help making a decision\"${NC}"
+echo -e "   ${YELLOW}\"Request confirmation for deleting user data\"${NC}"
 echo ""
-echo -e "${GREEN}7. Background Task${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/background process data${NC}"
-echo ""
-echo -e "${GREEN}8. View Memory${NC}"
-echo -e "   Send to demo agent: ${YELLOW}/memory${NC}"
+echo -e "${GREEN}6. Multi-step Workflows${NC}"
+echo -e "   ${YELLOW}\"Process a data pipeline with input validation\"${NC}"
 echo ""
 
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -133,6 +148,8 @@ echo -e "${BLUE}Helpful Commands${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "  View logs:        ${GREEN}docker compose -f docker-compose.interactive.yml logs -f${NC}"
+echo -e "  Agent logs:       ${GREEN}docker logs agentique-interactive-agent -f${NC}"
+echo -e "  MCP logs:         ${GREEN}docker logs agentique-interactive-mcp-server -f${NC}"
 echo -e "  Stop services:    ${GREEN}docker compose -f docker-compose.interactive.yml down${NC}"
 echo -e "  Restart:          ${GREEN}docker compose -f docker-compose.interactive.yml restart${NC}"
 echo -e "  Show status:      ${GREEN}docker compose -f docker-compose.interactive.yml ps${NC}"

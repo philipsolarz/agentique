@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.server.middleware.middleware import Middleware
 
 
-class CallRecorderMiddleware:
+class CallRecorderMiddleware(Middleware):
     """Records all tool calls for test assertions."""
 
     def __init__(self):
@@ -19,8 +20,7 @@ class CallRecorderMiddleware:
         """Record tool call before passing to next handler."""
         self.calls.append(
             {
-                "tool": context.message.name if hasattr(context.message, "name") else "unknown",
-                "timestamp": getattr(context, "timestamp", None),
+                "tool": context.message.params.name if hasattr(context.message, "params") else "unknown",
             }
         )
         return await call_next(context)
@@ -34,19 +34,14 @@ async def test_middleware_records_tool_calls():
 
     @server.tool()
     def test_tool(input: str) -> str:
+        """A test tool."""
         return f"output: {input}"
 
-    # Add middleware (note: middleware API may vary)
-    # For now, this tests the pattern - actual API depends on FastMCP 3.0
-    try:
-        server.add_middleware(recorder)
-    except AttributeError:
-        pytest.skip("Middleware API not yet available in this FastMCP version")
+    server.add_middleware(recorder)
 
     async with Client(server) as client:
         await client.call_tool("test_tool", {"input": "test"})
 
-    # Verify middleware recorded the call
     assert len(recorder.calls) >= 1
 
 
@@ -54,11 +49,9 @@ async def test_middleware_records_tool_calls():
 async def test_middleware_can_modify_response():
     """Middleware can intercept and modify tool responses."""
 
-    class ResponseModifierMiddleware:
+    class ResponseModifierMiddleware(Middleware):
         async def on_call_tool(self, context, call_next):
             result = await call_next(context)
-            # Modify the result
-            # Exact modification depends on FastMCP's response structure
             return result
 
     server = FastMCP("TestServer")
@@ -66,24 +59,21 @@ async def test_middleware_can_modify_response():
 
     @server.tool()
     def echo(text: str) -> str:
+        """Echo text."""
         return text
 
-    try:
-        server.add_middleware(modifier)
-    except AttributeError:
-        pytest.skip("Middleware API not yet available")
+    server.add_middleware(modifier)
 
     async with Client(server) as client:
         result = await client.call_tool("echo", {"text": "hello"})
-        # Result should have been processed by middleware
-        assert len(result) > 0
+        assert result.content is not None
 
 
 @pytest.mark.integration
 async def test_multiple_middleware_chain():
     """Multiple middleware execute in order."""
 
-    class CounterMiddleware:
+    class CounterMiddleware(Middleware):
         def __init__(self, name):
             self.name = name
             self.count = 0
@@ -98,18 +88,15 @@ async def test_multiple_middleware_chain():
 
     @server.tool()
     def test() -> str:
+        """A test tool."""
         return "ok"
 
-    try:
-        server.add_middleware(mw1)
-        server.add_middleware(mw2)
-    except AttributeError:
-        pytest.skip("Middleware API not yet available")
+    server.add_middleware(mw1)
+    server.add_middleware(mw2)
 
     async with Client(server) as client:
         await client.call_tool("test", {})
 
-    # Both middleware should have been called
     assert mw1.count >= 1 or mw2.count >= 1
 
 
@@ -117,7 +104,7 @@ async def test_multiple_middleware_chain():
 async def test_middleware_on_list_tools():
     """Middleware can intercept list_tools calls."""
 
-    class ListInterceptor:
+    class ListInterceptor(Middleware):
         def __init__(self):
             self.list_calls = 0
 
@@ -130,16 +117,12 @@ async def test_middleware_on_list_tools():
 
     @server.tool()
     def dummy() -> str:
+        """A dummy tool."""
         return "ok"
 
-    try:
-        server.add_middleware(interceptor)
-    except AttributeError:
-        pytest.skip("Middleware API not yet available")
+    server.add_middleware(interceptor)
 
     async with Client(server) as client:
         await client.list_tools()
 
-    # Middleware should have intercepted the list call
-    # Note: This test may need adjustment based on actual middleware API
-    assert interceptor.list_calls >= 0  # May or may not be supported
+    assert interceptor.list_calls >= 1

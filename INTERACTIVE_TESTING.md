@@ -2,15 +2,20 @@
 
 This guide walks you through manual testing of agentique using real MCP clients (Claude CLI, GitHub Copilot, VS Code extensions, etc.).
 
+## Prerequisites
+
+- Docker and Docker Compose installed
+- `GOOGLE_API_KEY` set in `.env` or environment (required for the Gemini-powered agent)
+
 ## Why Interactive Testing?
 
 Automated tests validate protocol conformance, but interactive testing with real MCP clients ensures:
-- ✅ Real-world MCP client compatibility
-- ✅ User experience quality
-- ✅ Streaming behavior in production
-- ✅ Multi-turn conversation flows
-- ✅ Error handling from a user perspective
-- ✅ Tool discovery and invocation UX
+- Real-world MCP client compatibility
+- User experience quality
+- Streaming behavior in production
+- Multi-turn conversation flows
+- Error handling from a user perspective
+- Tool discovery and invocation UX
 
 ## Quick Start
 
@@ -18,6 +23,9 @@ Automated tests validate protocol conformance, but interactive testing with real
 
 ```bash
 # From the agentique repository root
+./start-interactive.sh
+
+# Or manually:
 docker compose -f docker-compose.interactive.yml up -d --wait
 ```
 
@@ -26,7 +34,7 @@ Verify services are healthy:
 # Check MCP server
 curl http://localhost:8000/health
 
-# Check demo agent
+# Check A2A agent and its capabilities
 curl http://localhost:9000/.well-known/agent-card.json
 ```
 
@@ -41,6 +49,23 @@ Choose your preferred MCP client and follow the configuration guide in `examples
 ### 3. Run Test Scenarios
 
 Follow the scenarios below to systematically test all features.
+
+## About the A2A Agent
+
+The interactive testing stack runs a **real LLM-powered agent** built with Google ADK and Gemini. It features:
+
+- **Natural language understanding** - no slash commands needed, just talk naturally
+- **7 specialized sub-agents** routed by intent:
+  - **Calculator** - arithmetic and statistics
+  - **DataProcessor** - filter, sort, count lists
+  - **TextProcessor** - case conversion, word count, keyword extraction
+  - **InfoRetriever** - knowledge lookup and facts
+  - **Interactive** - user confirmations, preferences, wizards
+  - **Workflow** - background tasks, batch processing, state machines
+  - **BranchDemo** - sub-agent visibility and hierarchy
+- **25+ tool functions** with proper schemas
+- **Streaming responses** with progress updates
+- **Elicitation flows** for human-in-the-loop workflows
 
 ## Test Scenarios
 
@@ -73,275 +98,185 @@ Show me the available MCP tools
 
 **Steps**:
 1. Call the `agents` tool (no parameters)
-2. Verify the demo agent appears
+2. Verify the agent appears with its skills
 
 **Expected Result**:
-- Response includes "demo-agent"
-- Agent capabilities are shown
-- Skills are listed
+- Response includes "TestAgentRoot"
+- 7 skills listed (calculation, data_processing, text_manipulation, etc.)
+- Agent capabilities shown (streaming, state history)
 
 **In Chat**:
 ```
 List all available agents
 ```
 
-or
+### Scenario 3: Math & Calculations
 
-```
-Call the agents tool
-```
-
-### Scenario 3: Simple Message to Agent
-
-**Objective**: Test basic message routing from MCP → Bridge → A2A.
+**Objective**: Test natural language routing to the Calculator sub-agent.
 
 **Steps**:
-1. Send: "Hello, demo agent!"
-2. Verify you get a response
+1. Ask: "What is 15 times 7?"
+2. Ask: "Calculate the statistics for 10, 20, 30, 40, 50"
 
 **Expected Result**:
-- Response acknowledges the message
-- Mentions conversation turn number
-- Suggests using `/help`
+- Agent understands intent and routes to Calculator
+- Returns correct results (105, mean/median/etc.)
+- Uses the `calculate` tool internally
 
 **In Chat**:
 ```
-Send a message to the demo agent: Hello, demo agent!
+Ask the agent: What is 15 times 7?
 ```
 
-or use the `/help` command:
+### Scenario 4: Text Processing
 
-```
-Send this to the demo agent: /help
-```
-
-### Scenario 4: Command Help
-
-**Objective**: Verify the demo agent's help system.
+**Objective**: Test routing to the TextProcessor sub-agent.
 
 **Steps**:
-1. Send: `/help` to the demo agent
-2. Review the command list
+1. Ask: "Convert 'hello world' to uppercase"
+2. Ask: "Count the words in: The quick brown fox jumps over the lazy dog"
+3. Ask: "Extract keywords from: Machine learning is transforming artificial intelligence"
 
 **Expected Result**:
-- All commands are listed
-- Examples are provided
-- Formatting is readable
+- Text transformations are correct
+- Word count is accurate
+- Keywords are relevant
 
 **In Chat**:
 ```
-Tell the demo agent: /help
+Tell the agent: Convert 'hello world' to uppercase
 ```
 
-### Scenario 5: Echo Test
+### Scenario 5: Data Processing
 
-**Objective**: Test basic request/response flow.
+**Objective**: Test routing to the DataProcessor sub-agent.
 
 **Steps**:
-1. Send: `/echo This is a test message`
-2. Verify echoed response
+1. Ask: "Sort these items: banana, apple, cherry, date"
+2. Ask: "Filter items containing 'a' from: cat, dog, bat, rat, pig"
 
 **Expected Result**:
-- Response is: "Echo: This is a test message"
+- Items sorted alphabetically
+- Filtering works correctly with patterns
 
 **In Chat**:
 ```
-Send to demo agent: /echo This is a test message
+Ask the agent to sort these items: banana, apple, cherry, date
 ```
 
-### Scenario 6: Streaming Response
+### Scenario 6: Streaming Responses
 
-**Objective**: Test streaming responses (critical for A2A).
+**Objective**: Test streaming delivery through the bridge.
 
 **Steps**:
-1. Send: `/stream Tell me a long story`
+1. Ask a question that triggers a longer response
 2. Observe if response arrives in chunks
 
 **Expected Result**:
-- Response streams incrementally (you should see chunks appear)
+- Response streams incrementally
 - All chunks arrive
 - Final response is complete
 
 **In Chat**:
 ```
-Send to demo agent: /stream Tell me a long story about testing
+Ask the agent to process a large dataset of [1, 5, 3, 8, 2, 9, 4, 7, 6, 10] with sorting
 ```
 
-### Scenario 7: Error Handling
-
-**Objective**: Test A2A error → MCP error mapping.
-
-**Steps**:
-1. Send: `/error` to the demo agent
-2. Observe error handling
-
-**Expected Result**:
-- Error is displayed clearly
-- Error message explains it's intentional
-- Client handles error gracefully
-
-**In Chat**:
-```
-Tell demo agent: /error
-```
-
-### Scenario 8: Multi-Turn Conversation
-
-**Objective**: Test conversation context maintenance.
-
-**Steps**:
-1. Send: "Remember that my name is Alice"
-2. Then send: "What did I just tell you?"
-3. Verify agent remembers
-
-**Expected Result**:
-- Agent confirms it remembers "Alice"
-- Shows conversation history
-- Context is maintained across turns
-
-**In Chat**:
-```
-Tell demo agent: Remember that my name is Alice
-```
-
-Wait for response, then:
-
-```
-Ask demo agent: What did I just tell you?
-```
-
-### Scenario 9: Conversation Memory
-
-**Objective**: Test the `/memory` command.
-
-**Steps**:
-1. Have a few exchanges with the agent
-2. Send: `/memory`
-3. Review conversation history
-
-**Expected Result**:
-- Shows last N messages
-- Includes timestamps
-- Both user and assistant messages visible
-
-**In Chat**:
-```
-Tell demo agent: /memory
-```
-
-### Scenario 10: Calculator
-
-**Objective**: Test simple computation.
-
-**Steps**:
-1. Send: `/calc 15 * 7`
-2. Verify calculation
-
-**Expected Result**:
-- Result: "15 * 7 = 105"
-
-**In Chat**:
-```
-Tell demo agent: /calc 15 * 7
-```
-
-### Scenario 11: Background Task
+### Scenario 7: Background Tasks
 
 **Objective**: Test long-running tasks with progress updates.
 
 **Steps**:
-1. Send: `/background data processing`
+1. Ask: "Run a background task called 'data migration'"
 2. Observe progress updates
 
 **Expected Result**:
-- Progress updates appear (0%, 20%, 40%, ...)
+- Progress updates appear (working state)
 - Final completion message
-- All updates arrive in order
+- Task state transitions are visible
 
 **In Chat**:
 ```
-Tell demo agent: /background process large dataset
+Tell the agent to run a background task called 'data migration'
 ```
 
-### Scenario 12: Input Elicitation
+### Scenario 8: User Interaction & Elicitation
 
 **Objective**: Test input_required state (A2A elicitation flow).
 
 **Steps**:
-1. Send: `/ask`
-2. Agent requests additional input
-3. Send: `CONFIRM: blue 7`
-4. Verify agent processes the input
+1. Ask: "Request confirmation for deleting user data"
+2. Agent should request confirmation
+3. Respond with your choice
 
 **Expected Result**:
-- Agent asks for color and number
-- Waits for confirmation
-- Processes the follow-up correctly
+- Agent asks for confirmation with danger level
+- Input_required state is triggered
+- Follow-up is processed correctly
 
 **In Chat**:
 ```
-Tell demo agent: /ask
+Ask the agent to request confirmation for deleting all user data
 ```
 
-Then after it asks:
+### Scenario 9: Error Handling
 
-```
-Tell demo agent: CONFIRM: blue 7
-```
-
-### Scenario 13: Context Information
-
-**Objective**: Test context ID tracking.
+**Objective**: Test A2A error -> MCP error mapping.
 
 **Steps**:
-1. Send: `/context`
-2. Review context information
+1. Ask: "Simulate a failure"
+2. Observe error handling
 
 **Expected Result**:
-- Shows task_id
-- Shows context_id
-- Shows message_id
+- Error is displayed clearly
+- Error message is informative
+- Client handles error gracefully
 
 **In Chat**:
 ```
-Tell demo agent: /context
+Tell the agent to simulate a failure
 ```
 
-### Scenario 14: Slow Response
+### Scenario 10: Multi-Step Workflow
 
-**Objective**: Test timeout handling.
+**Objective**: Test complex multi-step operations.
 
 **Steps**:
-1. Send: `/slow test timeout`
-2. Observe delayed response
+1. Ask: "Process a data pipeline: first sort [5,3,1,4,2], then calculate statistics on the result"
+2. Observe multi-step execution
 
 **Expected Result**:
-- Initial acknowledgment appears
-- After ~2 seconds, full response arrives
-- Client handles the delay gracefully
+- Agent coordinates multiple sub-agents
+- Steps execute in order
+- Final result combines outputs
 
-**In Chat**:
-```
-Tell demo agent: /slow testing timeouts
-```
+### Scenario 11: State Machine Demo
 
-### Scenario 15: Multipart Response
-
-**Objective**: Test multiple artifacts in one response.
+**Objective**: Test task state transitions.
 
 **Steps**:
-1. Send: `/multipart`
-2. Observe multiple parts
+1. Ask: "Demonstrate the 'working' state"
+2. Ask: "Demonstrate the 'input-required' state"
+3. Ask: "Demonstrate the 'completed' state"
 
 **Expected Result**:
-- Three separate parts appear
-- Each part arrives with small delay
-- All parts are received
+- Each state transition is visible
+- State messages are appropriate
+- Client handles all states
 
-**In Chat**:
-```
-Tell demo agent: /multipart
-```
+### Scenario 12: Agent Card Inspection
+
+**Objective**: Verify the rich agent card is served correctly.
+
+**Steps**:
+1. Curl the agent card directly: `curl http://localhost:9000/.well-known/agent-card.json | jq .`
+2. Verify all fields
+
+**Expected Result**:
+- 7 skills listed with descriptions and tags
+- Capabilities include streaming and stateTransitionHistory
+- Extensions include MCP tools, prompts, and resources
+- Sub-agent metadata is present
 
 ## Verification Checklist
 
@@ -358,22 +293,22 @@ After running all scenarios, verify:
 - [ ] Agent card discovery works
 - [ ] Message routing succeeds
 - [ ] Streaming responses work
-- [ ] Multi-turn context is maintained
 - [ ] Task IDs are tracked correctly
+
+### Agent Capabilities
+- [ ] Natural language routing works (no slash commands needed)
+- [ ] Calculator sub-agent responds to math queries
+- [ ] TextProcessor handles text operations
+- [ ] DataProcessor sorts and filters correctly
+- [ ] Background tasks show progress
+- [ ] Elicitation flows work
+- [ ] Error states are handled
 
 ### User Experience
 - [ ] Responses are timely
 - [ ] Streaming feels natural
 - [ ] Errors are clear and helpful
-- [ ] Commands are intuitive
-- [ ] Help system is useful
-
-### Advanced Features
-- [ ] Background tasks show progress
-- [ ] Input elicitation flows work
-- [ ] Conversation memory persists
-- [ ] Context tracking is accurate
-- [ ] Timeouts are handled
+- [ ] Agent understands varied phrasing
 
 ## Troubleshooting
 
@@ -389,14 +324,27 @@ curl http://localhost:9000/.well-known/agent-card.json
 # Restart MCP client
 ```
 
+### Agent not responding
+
+```bash
+# Check if GOOGLE_API_KEY is set
+docker exec agentique-interactive-agent env | grep GOOGLE
+
+# Check agent logs
+docker logs agentique-interactive-agent
+
+# Verify the agent container is healthy
+docker ps | grep agentique-interactive
+```
+
 ### Timeout errors
 
 ```bash
 # Check if services are running
 docker ps | grep agentique-interactive
 
-# View demo agent logs
-docker logs agentique-interactive-demo-agent
+# View agent logs for LLM timeouts
+docker logs agentique-interactive-agent --tail 30
 
 # Increase timeout in MCP client config
 ```
@@ -404,14 +352,8 @@ docker logs agentique-interactive-demo-agent
 ### Responses not streaming
 
 - Check MCP client supports streaming
-- Verify demo agent streaming is enabled
+- Verify agent streaming is enabled (check agent card capabilities)
 - Review bridge logs for errors
-
-### Context not maintained
-
-- Verify context_id is being passed
-- Check demo agent memory logs
-- Ensure same session is used
 
 ## Advanced Testing
 
@@ -430,19 +372,12 @@ Compare:
 - Error formatting
 - Multi-turn flow
 
-### Load Testing
-
-Send rapid-fire messages to test:
-- Concurrent request handling
-- Context isolation
-- Memory management
-
 ### Edge Cases
 
 - Very long messages (>10KB)
 - Unicode and special characters
-- Rapid context switching
-- Malformed commands
+- Rapid sequential requests
+- Malformed input
 
 ## Reporting Issues
 
@@ -454,22 +389,14 @@ If you find issues during interactive testing:
 4. Save relevant logs:
    ```bash
    docker logs agentique-interactive-mcp-server > mcp-server.log
-   docker logs agentique-interactive-demo-agent > demo-agent.log
+   docker logs agentique-interactive-agent > agent.log
    ```
 5. File an issue with all context
-
-## Next Steps
-
-After validating basic functionality:
-1. Test with your own custom A2A agents
-2. Configure routing strategies
-3. Add middleware for observability
-4. Test push notifications (if supported)
-5. Validate against production agents
 
 ## Resources
 
 - MCP client configs: `examples/mcp-clients/`
 - Docker compose: `docker-compose.interactive.yml`
-- Demo agent code: `tests/agents/demo_agent.py`
+- A2A agent code: `a2a_test_agent/src/adk_test_agent/`
+- Agent card: `a2a_test_agent/agent_card.json`
 - Automated tests: `tests/integration/` and `tests/e2e/`

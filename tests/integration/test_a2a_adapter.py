@@ -29,10 +29,6 @@ async def test_echo_agent_card_discovery(echo_a2a_client):
 @pytest.mark.integration
 async def test_echo_agent_send_message(echo_a2a_client):
     """Non-streaming message send returns the echoed message."""
-    from a2a.utils.message import new_user_text_message
-
-    message = new_user_text_message("Hello, world!")
-
     payload = {
         "jsonrpc": "2.0",
         "id": str(uuid4()),

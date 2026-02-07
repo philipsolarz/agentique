@@ -12,6 +12,20 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
+@pytest.fixture(autouse=True)
+def _reset_tracer_provider():
+    """Reset the global tracer provider before each test.
+
+    OTel only allows set_tracer_provider once per process unless we
+    forcibly clear the internal state.
+    """
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    yield
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+
+
 @pytest.fixture
 def span_exporter():
     """Captures OTel spans in memory for assertion."""
@@ -64,7 +78,6 @@ def test_nested_spans_captured(span_exporter):
     with tracer.start_as_current_span("parent") as parent:
         parent_id = parent.get_span_context().span_id
         with tracer.start_as_current_span("child") as child:
-            # Child should have parent context
             pass
 
     spans = span_exporter.get_finished_spans()
@@ -76,12 +89,11 @@ async def test_tool_call_could_create_span(span_exporter):
     """If instrumented, tool calls would create spans."""
     from fastmcp import Client, FastMCP
 
-    # Create a simple server
     server = FastMCP("TestServer")
 
     @server.tool()
     def test_tool(input: str) -> str:
-        # If the tool implementation includes tracing, it would create a span
+        """A test tool."""
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span("tool_execution"):
             return f"processed: {input}"
@@ -89,11 +101,8 @@ async def test_tool_call_could_create_span(span_exporter):
     async with Client(server) as client:
         await client.call_tool("test_tool", {"input": "test"})
 
-    # Check if any spans were created
     spans = span_exporter.get_finished_spans()
-    # If the tool is instrumented, we'd have at least one span
-    # For now, just verify the exporter works
-    assert isinstance(spans, list)
+    assert isinstance(spans, (list, tuple))
 
 
 @pytest.mark.integration

@@ -13,7 +13,7 @@
         "--stdio"
       ],
       "env": {
-        "A2A_AGENT_URL": "http://a2a-demo-agent:9000"
+        "A2A_AGENT_URL": "http://a2a-agent:9000"
       }
     }
   ]

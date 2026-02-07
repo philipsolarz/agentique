@@ -40,7 +40,7 @@ def create_mock_a2a_app(
     )
 
     if skills is None:
-        skills = [AgentSkill(id="test", name="Test", description="Test skill")]
+        skills = [AgentSkill(id="test", name="Test", description="Test skill", tags=["test"])]
 
     card = AgentCard(
         name=name,
