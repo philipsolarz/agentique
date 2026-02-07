@@ -1,0 +1,131 @@
+# Docker Compose configuration for integration testing
+# Provides Redis, DynamoDB Local, A2A test agent, and MCP server with health checks
+
+services:
+  # Redis for task persistence testing
+  redis:
+    image: redis:7-alpine
+    container_name: agentique-test-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    networks:
+      - agentique-test-network
+
+  # DynamoDB Local for task persistence testing
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: agentique-test-dynamodb
+    command: "-jar DynamoDBLocal.jar -sharedDb"
+    ports:
+      - "8100:8000"  # Map to 8100 externally to avoid conflicts
+    working_dir: /home/dynamodblocal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/shell/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - agentique-test-network
+
+  # A2A Test Agent Service
+  # Multi-agent system built with Google ADK, exposed via A2A protocol
+  a2a-test-agent:
+    build:
+      context: .
+      dockerfile: docker/a2a-test-agent/Dockerfile
+    container_name: agentique-test-a2a-agent
+    ports:
+      - "9000:9000"
+    environment:
+      # Server configuration
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: 9000
+      A2A_PROTOCOL: http
+      # Base URL for the agent card
+      A2A_BASE_URL: http://a2a-test-agent:9000
+
+      # Google AI configuration (optional for testing)
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+
+      # Model configuration
+      ADK_MODEL: ${ADK_MODEL:-gemini-2.0-flash}
+
+    volumes:
+      - ./a2a_test_agent:/app
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      - agentique-test-network
+
+  # MCP Server Service (Agentique Bridge)
+  # FastMCP 3.0 server that bridges MCP clients to A2A agents
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-test-mcp-server
+    ports:
+      - "8000:8000"
+    depends_on:
+      a2a-test-agent:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_healthy
+    environment:
+      # Transport configuration
+      AGENTIQUE_TRANSPORT: http
+      AGENTIQUE_HOST: 0.0.0.0
+      AGENTIQUE_PORT: 8000
+
+      # Agent configuration
+      # Format: name=url|skill1,skill2,skill3
+      AGENTIQUE_AGENTS: root=http://a2a-test-agent:9000|calculator,data_processing,text_manipulation,info_retrieval
+
+      # Redis configuration
+      REDIS_URL: redis://redis:6379
+
+      # DynamoDB configuration
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      AWS_ACCESS_KEY_ID: testing
+      AWS_SECRET_ACCESS_KEY: testing
+      AWS_DEFAULT_REGION: us-east-1
+
+    volumes:
+      - ./:/app
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      - agentique-test-network
+
+# Network configuration
+networks:
+  agentique-test-network:
+    driver: bridge
+    name: agentique-test-network

@@ -1,0 +1,190 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, rewrite-3-claude]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Run unit tests
+        run: |
+          pytest -m unit -n auto \
+            --junitxml=unit-results.xml \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=html \
+            -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+          flags: unit
+          name: unit-coverage
+
+      - name: Upload test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: unit-results.xml
+          check_name: Unit Test Results
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: unit
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Run integration tests
+        run: |
+          pytest -m integration \
+            --junitxml=integration-results.xml \
+            --timeout=60 \
+            -v
+
+      - name: Upload test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: integration-results.xml
+          check_name: Integration Test Results
+
+  e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: integration
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Start Docker Compose stack
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait --build
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY || 'dummy-key-for-testing' }}
+
+      - name: Wait for services to be healthy
+        run: |
+          timeout 90 bash -c '
+            until curl -sf http://localhost:8000/health; do
+              echo "Waiting for MCP server..."
+              sleep 2
+            done
+            echo "MCP server is healthy"
+
+            until curl -sf http://localhost:9000/.well-known/agent-card.json; do
+              echo "Waiting for A2A agent..."
+              sleep 2
+            done
+            echo "A2A agent is healthy"
+
+            echo "All services ready!"
+          '
+
+      - name: Show service logs (before tests)
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml logs --tail=50
+
+      - name: Run e2e tests
+        run: |
+          pytest -m e2e \
+            --junitxml=e2e-results.xml \
+            --timeout=120 \
+            -v
+
+      - name: Upload test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: e2e-results.xml
+          check_name: E2E Test Results
+
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.test.yml logs > docker-logs.txt
+
+      - name: Upload Docker logs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: docker-logs
+          path: docker-logs.txt
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose -f docker-compose.test.yml down -v --remove-orphans
+
+  all-tests:
+    name: All Tests Summary
+    runs-on: ubuntu-latest
+    needs: [unit, integration, e2e]
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.unit.result }}" != "success" ]; then
+            echo "Unit tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.integration.result }}" != "success" ]; then
+            echo "Integration tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "E2E tests failed"
+            exit 1
+          fi
+          echo "All test suites passed!"
