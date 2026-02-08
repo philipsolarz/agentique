@@ -1,0 +1,23 @@
+name: "03_math"
+description: "Math calculations — route to calculator, verify results"
+tags: ["math", "calculator", "routing"]
+steps:
+  - name: "simple_multiplication"
+    action: send_message
+    message: "What is 15 times 7?"
+    timeout: 30
+    assertions:
+      - type: contains
+        value: "105"
+      - type: response_time_lt
+        value: 15000
+
+  - name: "addition"
+    action: send_message
+    message: "Calculate 123 plus 456"
+    timeout: 30
+    assertions:
+      - type: contains
+        value: "579"
+      - type: response_time_lt
+        value: 15000

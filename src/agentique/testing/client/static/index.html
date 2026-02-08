@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentique Test Client</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <h1>Agentique Test Client</h1>
+    <div class="status-bar">
+      <div class="status-indicator">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Disconnected</span>
+      </div>
+      <span class="mcp-url" id="mcpUrl"></span>
+    </div>
+  </div>
+
+  <!-- Main layout -->
+  <div class="main">
+    <!-- Chat panel -->
+    <div class="chat-panel">
+      <div class="messages" id="messages">
+        <div class="message system">
+          Welcome to the Agentique Test Client. Connect to an MCP server to begin.
+        </div>
+      </div>
+
+      <!-- Input area -->
+      <div class="input-area">
+        <div class="input-row">
+          <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+          <button class="btn" id="sendBtn" disabled>Send</button>
+        </div>
+        <div class="scenario-row">
+          <label>Scenario:</label>
+          <select id="scenarioSelect" disabled>
+            <option value="">-- select --</option>
+          </select>
+          <button class="btn secondary" id="runScenarioBtn" disabled>Run</button>
+          <button class="btn secondary" id="runAllBtn" disabled>Run All</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event log panel -->
+    <div class="event-panel">
+      <div class="event-panel-header">
+        <span>Event Log</span>
+        <button id="clearEventsBtn">Clear</button>
+      </div>
+      <div class="event-log" id="eventLog"></div>
+    </div>
+  </div>
+
+  <!-- Elicitation modal -->
+  <div class="modal-overlay" id="elicitModal">
+    <div class="modal">
+      <h3>Input Required</h3>
+      <p id="elicitMessage">The agent is requesting input.</p>
+      <input type="text" id="elicitInput" placeholder="Your response...">
+      <div class="modal-actions">
+        <button class="btn secondary" id="elicitCancelBtn">Cancel</button>
+        <button class="btn" id="elicitSubmitBtn">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

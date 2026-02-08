@@ -31,6 +31,10 @@ test = [
     "opentelemetry-sdk>=1.24",
     "pytest-cov>=5.0",
 ]
+ui = [
+    "uvicorn>=0.30.0",
+    "pyyaml>=6.0",
+]
 
 [project.scripts]
 agentique = "agentique.__main__:main"

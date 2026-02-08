@@ -1,0 +1,23 @@
+name: "04_text"
+description: "Text processing — case conversion, word count"
+tags: ["text", "routing"]
+steps:
+  - name: "uppercase_text"
+    action: send_message
+    message: "Convert 'hello world' to uppercase"
+    timeout: 30
+    assertions:
+      - type: contains
+        value: "HELLO WORLD"
+      - type: response_time_lt
+        value: 15000
+
+  - name: "word_count"
+    action: send_message
+    message: "Count the words in: the quick brown fox jumps over the lazy dog"
+    timeout: 30
+    assertions:
+      - type: matches
+        value: "\\b9\\b"
+      - type: response_time_lt
+        value: 15000

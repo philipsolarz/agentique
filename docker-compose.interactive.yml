@@ -82,6 +82,25 @@ services:
       com.agentique.purpose: "interactive-testing"
       com.agentique.mcp.client: "compatible"
 
+  # Web-based MCP test client with visual chat UI
+  test-ui:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-interactive-test-ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: INFO
+    command: ["python", "-m", "agentique.testing.client", "--mcp-url", "http://mcp-server:8000/mcp", "--port", "8080"]
+    networks:
+      - agentique-interactive
+    labels:
+      com.agentique.purpose: "test-ui"
+
 networks:
   agentique-interactive:
     driver: bridge

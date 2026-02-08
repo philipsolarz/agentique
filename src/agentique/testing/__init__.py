@@ -14,4 +14,6 @@ __all__ = [
     "RecordingMiddleware",
     "mock_agent_card",
     "mock_agent_info",
+    # Client subpackage (import lazily via agentique.testing.client)
+    "client",
 ]

@@ -1,0 +1,13 @@
+name: "06_inspect"
+description: "Agent inspection — call inspect tool, verify hierarchy"
+tags: ["inspect", "metadata"]
+steps:
+  - name: "inspect_agents"
+    action: call_tool
+    tool: "inspect"
+    timeout: 15
+    assertions:
+      - type: tool_called
+        value: "inspect"
+      - type: response_time_lt
+        value: 10000
