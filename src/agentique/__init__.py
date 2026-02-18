@@ -51,9 +51,8 @@ from .core.tool_mapper import DefaultToolMapper, FlatHierarchyToolMapper, PerSki
 from .bridge.router import (
     AgentRouter,
     DirectRouter,
-    KeywordRouter,
     LLMRouter,
-    WeightedKeywordRouter,
+    RoutingStrategy,
 )
 from .bridge.provider import AgentProvider
 from .bridge.task_manager import TaskManager
@@ -95,7 +94,7 @@ from .bridge.output_models import (
 )
 from .bridge.persistent_stores import DynamoDBTaskStore, RedisTaskStore
 from .bridge.storage import InMemoryTaskStore, TaskStore
-from .bridge.visibility import AgentVisibility
+from .bridge.visibility import AgentVisibility, TenantVisibilityMiddleware, VisibilityPolicy
 from .bridge.webhook import PushNotification, WebhookReceiver
 
 # Server factory
@@ -152,10 +151,9 @@ __all__ = [
     "ContextManager",
     "DirectRouter",
     "InMemoryTaskStore",
-    "KeywordRouter",
     "LLMRouter",
+    "RoutingStrategy",
     "TaskStore",
-    "WeightedKeywordRouter",
     "TaskManager",
     # Middleware
     "ErrorMappingMiddleware",
@@ -195,6 +193,8 @@ __all__ = [
     "RedisTaskStore",
     # Visibility
     "AgentVisibility",
+    "TenantVisibilityMiddleware",
+    "VisibilityPolicy",
     # Webhooks
     "PushNotification",
     "WebhookReceiver",

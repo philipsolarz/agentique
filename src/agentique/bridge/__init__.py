@@ -41,14 +41,12 @@ from .provider import AgentProvider
 from .router import (
     AgentRouter,
     DirectRouter,
-    KeywordRouter,
     LLMRouter,
     RoutingStrategy,
-    WeightedKeywordRouter,
 )
 from .storage import InMemoryTaskStore, TaskStore
 from .task_manager import TaskManager
-from .visibility import AgentVisibility
+from .visibility import AgentVisibility, TenantVisibilityMiddleware, VisibilityPolicy
 from .webhook import PushNotification, WebhookReceiver
 
 __all__ = [
@@ -63,11 +61,9 @@ __all__ = [
     "AgentProvider",
     "AgentRouter",
     "DirectRouter",
-    "KeywordRouter",
     "LLMRouter",
     "RoutingStrategy",
     "TaskStore",
-    "WeightedKeywordRouter",
     "TaskManager",
     # Dependencies
     "clear_dependencies",
@@ -101,6 +97,8 @@ __all__ = [
     "RedisTaskStore",
     # Visibility
     "AgentVisibility",
+    "TenantVisibilityMiddleware",
+    "VisibilityPolicy",
     # Webhooks
     "PushNotification",
     "WebhookReceiver",

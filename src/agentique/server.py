@@ -85,6 +85,7 @@ def create_server(
     task_store: TaskStore | None = None,
     transforms: list[Any] | None = None,
     namespace: str | None = None,
+    visibility: Any | None = None,
 ) -> FastMCP:
     """Create a FastMCP server bridging MCP clients to agent backends.
 
@@ -99,6 +100,10 @@ def create_server(
         task_store: Pluggable storage backend for task persistence.
         transforms: List of FastMCP Transform instances to apply.
         namespace: Optional namespace prefix for all agent tools.
+        visibility: Optional ``AgentVisibility`` instance. When provided,
+            its tenant policy middleware is registered and
+            ``apply_session_policy()`` is called at the start of each
+            ``agent`` tool invocation.
 
     Returns:
         A fully configured ``FastMCP`` server instance.
@@ -160,6 +165,13 @@ def create_server(
     # Add FastMCP-level middleware
     mcp.add_middleware(AgentiqueMiddleware(emitter=emitter))
 
+    # Register tenant visibility middleware when a policy is configured
+    if visibility is not None:
+        _agent_tool_map = {a.name: ["agent"] for a in agent_list}
+        vis_middleware = visibility.build_tenant_middleware(_agent_tool_map)
+        if vis_middleware is not None:
+            mcp.add_middleware(vis_middleware)
+
     # Apply transforms
     if namespace:
         from fastmcp.server.transforms import Namespace
@@ -192,6 +204,17 @@ def create_server(
             context_id: Optional context ID for conversation continuity
         """
         task_id = str(uuid4())
+
+        # Auto-apply tenant visibility policy at session initialisation
+        if visibility is not None:
+            session_meta: dict[str, Any] = {}
+            _raw_meta = getattr(ctx, "meta", None) or getattr(ctx, "metadata", None)
+            if isinstance(_raw_meta, dict):
+                session_meta = _raw_meta
+            try:
+                await visibility.apply_session_policy(ctx, session_metadata=session_meta)
+            except Exception as _vis_exc:
+                logger.debug("Visibility policy application skipped: %s", _vis_exc)
 
         # Resolve context ID via the context manager
         session_id = getattr(ctx, "session_id", None)
@@ -289,6 +312,16 @@ def create_server(
                         "Agent requires authentication. "
                         "Provide credentials via context metadata."
                     )
+
+                # Capture artifacts as MCP Resources
+                if chunk.kind == "artifact" and chunk.text:
+                    art_id = event.artifact_id or f"artifact-{index}"
+                    art_name = event.artifact_name or art_id
+                    uri = _tasks.capture_artifact(
+                        task_id, art_id, chunk.text, name=art_name,
+                    )
+                    logger.debug("Artifact registered: %s", uri)
+                    await ctx.info(f"Artifact available: {uri}")
 
                 # Collect content
                 if chunk.kind in {"message", "artifact"} and chunk.text:
@@ -528,6 +561,43 @@ def create_server(
         """Catalog of available A2A agents."""
         return json.dumps(
             {"agents": [a.to_dict() for a in router.list_agents()]},
+            indent=2,
+        )
+
+    # ---- Artifact resources ----
+
+    @mcp.resource("a2a://{task_id}/artifacts/{artifact_id}")
+    async def artifact_resource(task_id: str, artifact_id: str) -> str:
+        """Serve a captured agent artifact.
+
+        Artifacts are registered automatically when an agent emits an
+        artifact event. The URI scheme is::
+
+            a2a://{task_id}/artifacts/{artifact_id}
+
+        Args:
+            task_id: The task that produced the artifact.
+            artifact_id: The artifact identifier within that task.
+        """
+        content = tasks.get_artifact(task_id, artifact_id)
+        if content is None:
+            return json.dumps({
+                "error": f"Artifact '{artifact_id}' not found in task '{task_id}'",
+                "task_id": task_id,
+                "artifact_id": artifact_id,
+            })
+        return content
+
+    @mcp.resource("a2a://{task_id}/artifacts")
+    async def task_artifacts_catalog(task_id: str) -> str:
+        """List all artifacts captured for a task.
+
+        Args:
+            task_id: The task to list artifacts for.
+        """
+        artifacts = tasks.list_artifacts(task_id)
+        return json.dumps(
+            {"task_id": task_id, "artifacts": artifacts, "count": len(artifacts)},
             indent=2,
         )
 

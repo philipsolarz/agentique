@@ -1,329 +1,551 @@
-# Agentique: bridging MCP and agent ecosystems
+# Agentique: an Intelligent Agent Gateway
 
-**Agentique should become the protocol-agnostic bridge between MCP clients and any agent ecosystem.** The library currently bridges MCP to A2A agents using FastMCP 3.0, but research reveals significant untapped features in FastMCP 3.0's provider/transform/middleware architecture, missing A2A protocol capabilities (push notifications, gRPC, extensions), and clear design patterns from top Python libraries that would make agentique genuinely unopinionated and extensible. This report provides a concrete roadmap for evolving agentique from an A2A-specific bridge into a generic, pluggable agent protocol gateway — one that treats A2A as merely its first backend adapter.
-
----
-
-## Proposed mission statement and architectural vision
-
-**Mission statement**: *Agentique is a Python framework that exposes any agent ecosystem as a first-class MCP server. It translates MCP's tool/resource/prompt primitives into agent protocol operations, letting any MCP client — Claude, Cursor, ChatGPT, or custom hosts — seamlessly interact with remote agents regardless of their underlying protocol.*
-
-The core architectural insight is that agentique sits at the intersection of three rapidly maturing specifications: **MCP** (the client-facing protocol, now at its 2025-11-25 spec with tasks, structured output, and extensions), **A2A** (the first agent-to-agent protocol, now at v0.3 with gRPC support and heading toward v1.0), and **FastMCP 3.0** (the server framework, now with providers, transforms, and middleware). Each of these has evolved substantially, and agentique must leverage all three fully while remaining open to future protocols.
-
-The recommended architecture follows three layers:
-
-- **Protocol Layer** (top): FastMCP 3.0 server exposing MCP primitives to clients
-- **Bridge Layer** (middle): Protocol-agnostic routing, translation, and state management  
-- **Adapter Layer** (bottom): Pluggable backends — A2A first, then OpenAI Agents API, LangChain Runnable endpoints, custom HTTP agents, etc.
-
-Each layer communicates through **Protocol classes** (structural subtyping), uses **middleware chains** for cross-cutting concerns, and emits **events** for observability. This mirrors how FastAPI achieves unopinionated design while remaining highly capable.
+**Agentique is an Intelligent Agent Gateway — a smart orchestration layer that sits between MCP clients and backend agent ecosystems.** It is not a passive bridge that forwards messages verbatim. It is an active, opinionated gateway that applies intelligence to routing decisions, enforces policy at session boundaries, normalises backend transports, and promotes agent-produced artifacts to first-class MCP resources. Built on FastMCP 3.0, A2A SDK, and the Model Context Protocol, it treats the client's LLM as the always-available decision engine and relies entirely on it for every non-trivial routing choice.
 
 ---
 
-## FastMCP 3.0 features agentique should leverage
+## Mission statement and architectural vision
 
-FastMCP 3.0 (currently v3.0.0b1, released January 2026) introduced a fundamentally new architecture built on three primitives: **Components** (tools/resources/prompts), **Providers** (where components come from), and **Transforms** (middleware that modifies components as they flow to clients). Agentique's `A2AAgentProvider` correctly uses the Provider pattern, but several powerful features remain untapped.
+**Mission statement**: *Agentique is a Python framework that transforms any collection of A2A (or other protocol) agents into a fully-featured, intelligently-routed MCP server. It applies LLM-driven routing, policy-based access control, and automatic resource registration so that MCP clients — Claude, Cursor, ChatGPT, or custom hosts — interact with backend agents as if they were native MCP capabilities.*
 
-**Transforms should replace custom filtering logic.** FastMCP 3.0's `Transform` classes — `Namespace`, `ToolTransform`, `Visibility`, `ResourcesAsTools`, `PromptsAsTools` — provide a composable middleware pipeline for component modification. Instead of agentique implementing its own tool name prefixing or visibility logic, it should expose transform hooks. For example, users could apply a `Namespace` transform per agent to prevent tool name collisions, or a custom `ToolTransform` to rename verbose agent skills into concise tool names. The `Visibility` transform with **session-level control** via `ctx.enable_components()` / `ctx.disable_components()` enables dynamic agent availability — a user could "unlock" premium agents mid-session.
+The gateway sits at the intersection of three maturing specifications: **MCP** (client-facing, now with structured output, tasks, and elicitation), **A2A** (the agent-to-agent protocol at v0.3, heading toward v1.0 under Linux Foundation stewardship), and **FastMCP 3.0** (provider/transform/middleware server framework). Rather than treating these as transport pipes, Agentique exploits each specification's richest semantics: MCP sampling for routing, MCP resources for artifact exposure, FastMCP middleware for policy enforcement, and A2A task IDs for resilient stream reconnection.
 
-**Middleware should handle cross-cutting concerns.** FastMCP 3.0's `Middleware` class provides `on_call_tool`, `on_list_tools`, `on_read_resource`, and other hooks in a chain-of-responsibility pattern. Agentique should use this for logging, rate limiting, authentication forwarding, and metrics collection rather than embedding these in the bridge layer. An `AuthMiddleware` with `AuthContext` already exists for server-wide enforcement.
+The architecture follows three layers:
 
-**Composition via mounting enables multi-bridge architectures.** FastMCP's `mount()` creates live sub-servers with namespacing. Agentique could mount separate bridges — one for A2A agents, one for OpenAI-compatible agents, one for local agents — under a single MCP server with automatic namespace isolation. The `create_proxy()` function could proxy to remote MCP servers that themselves wrap agents.
+- **Protocol Layer** (top): FastMCP 3.0 server exposing MCP primitives — tools, resources, prompts — with middleware and transforms applied
+- **Bridge Layer** (middle): Intelligent routing (LLM-first, Plan→Execute→Verify), policy enforcement, task management, artifact registry
+- **Adapter Layer** (bottom): Pluggable backends — A2A as the primary adapter, with HTTP and MCP proxy adapters also available
 
-**Background tasks need the full TaskConfig API.** Agentique uses `task=True` but should leverage `TaskConfig(mode="optional", poll_interval=timedelta(seconds=2))` for fine-grained control. The `Progress` dependency injection (`from fastmcp.dependencies import Progress`) provides clean progress reporting: `await progress.set_total(n)`, `await progress.increment()`, `await progress.set_message("Processing agent X")`.
-
-**Additional FastMCP 3.0 features to adopt:**
-
-- **Dependency injection** via `Depends()` — inject agent clients, configuration, and services into tools cleanly
-- **OpenTelemetry integration** — zero-config tracing with `fastmcp.*` span attributes; agentique should add `agentique.agent_name`, `agentique.protocol`, `agentique.task_state` attributes
-- **Storage backends** — pluggable persistent state (Redis, DynamoDB, filesystem) for task state instead of in-memory dicts
-- **Elicitation with response types** — `ctx.elicit()` supports Pydantic models, enabling structured confirmation dialogs for agent actions
-- **Sampling with tool loop** — `ctx.sample()` now supports tools and `tool_choice`, enabling agentique to use LLM-driven routing for agent selection
-- **Lifespan composition** — pipe operator (`lifespan_a | lifespan_b`) for composing startup/shutdown logic across multiple agent connections
-- **Structured content** — tools returning dicts/Pydantic models get automatic structured JSON alongside traditional content, aligning with MCP's new `outputSchema`/`structuredContent`
+A key architectural insight: the MCP client's LLM and the backend A2A agents together form a **closed reasoning loop**. The gateway orchestrates this loop — it does not merely pass messages through it. This changes the design constraints: every gateway decision (routing, visibility, verification) should leverage LLM reasoning rather than heuristics, and every piece of information the LLM might need (agent capabilities, task state, artifacts) should be a first-class MCP primitive.
 
 ---
 
-## Missing A2A protocol features to implement
+## The four pillars of the Intelligent Gateway
 
-The A2A protocol has matured significantly to v0.3.0 (July 2025) with an RC v1.0 on the horizon. It now supports **three protocol bindings** (JSON-RPC, gRPC, REST), an **extensions mechanism**, and a richer task lifecycle. Several features are absent from the current agentique implementation.
+### Pillar 1 — Pure LLM Routing: Plan → Execute → Verify
 
-**Push notifications are critical for production deployments.** A2A supports webhook-based push notifications for long-running tasks where clients can't maintain persistent connections. The server POSTs task updates to a client-specified URL, secured via JWT signing. Agentique should implement `PushNotificationConfig` support — when an MCP client starts a background task, agentique should configure push notifications on the A2A server and translate incoming webhooks into MCP `notifications/tasks/status` events. The SDK provides `InMemoryPushNotifier` and `PushNotificationConfigStore` interfaces.
+**Before**: `AgentRouter` defaulted to `KeywordRouter` — a deterministic keyword-matching algorithm that scored agents by skill overlap with the user message. `LLMRouter` existed but fell back to `KeywordRouter` when sampling failed. This meant the system could route without ever consulting an LLM.
 
-**Task resubscription enables resilient streaming.** A2A's `tasks/resubscribe` method allows reconnecting to an active stream after disconnection. Agentique's `RouterBridge` should implement reconnection logic — if an SSE connection drops, it should resubscribe using the task ID rather than failing the MCP request.
+**After**: Keyword-matching routers (`KeywordRouter`, `WeightedKeywordRouter`) have been deleted entirely. `LLMRouter` is now the only non-direct routing strategy, and it hard-requires a live `ctx.sample()` context. The synchronous `select()` method raises `RuntimeError` to force callers onto the async path. There is no deterministic fallback.
 
-**gRPC transport should be a backend option.** The A2A SDK now includes `GrpcTransport` alongside `JsonRpcTransport` and `RestTransport`. For high-throughput deployments, agentique should support gRPC as a backend transport via `ClientConfig(ordered_transports=["gRPC", "JSONRPC"])`.
+**The Plan → Execute → Verify loop:**
 
-**Context ID management needs proper implementation.** A2A uses `contextId` to group related tasks into conversations and `taskId` for individual operations. Agentique should map MCP session IDs to A2A context IDs and maintain this mapping in its state store. The rules are: agents MUST infer contextId from task if only taskId is provided, and agents MUST reject messages with mismatching contextId and taskId.
+*Plan* — `LLMRouter.aselect()` builds a structured **capability manifest** from every visible agent — name, description, skills, and endpoint — and presents it to the client LLM via `ctx.sample()`. The prompt constrains the response to one of the valid agent names. Structured sampling (`result_type=agent_names`) is attempted first for cleaner extraction, with plain-text sampling as fallback. The LLM can see the full agent graph and makes an informed, capability-aware routing decision.
 
-**The extensions mechanism should be exposed.** A2A extensions add custom data to tasks, messages, parts, and agent card capabilities. Agentique should allow users to define extensions that are propagated to A2A agents and received back in responses — for example, a tracing extension that carries OpenTelemetry span context.
+*Execute* — `AgentRouter.aresolve()` calls the selected adapter and streams events back to the MCP client. In single-agent setups or when an explicit `target` is provided, no LLM call is made — the shortcut path avoids unnecessary sampling latency.
 
-**Proper error code mapping is needed.** A2A defines specific error codes: `-32001` (TaskNotFound), `-32002` (ContentTypeNotSupported), `-32003` (UnsupportedOperation). Agentique should map these to appropriate MCP error responses rather than generic internal errors. Additionally, A2A's `auth-required` and `rejected` task states should be translated into MCP elicitation or error flows.
+*Verify* (optional) — `LLMRouter.averify()` calls `ctx.sample()` a second time after the agent responds, asking the client LLM whether the response adequately addresses the original request. When `enable_verification=True`, a `NO` verdict can trigger re-routing to another agent. This gate is opt-in and fail-open (unavailable `ctx` returns `True`).
 
-**Extended Agent Cards should be supported.** A2A distinguishes between public agent cards (unauthenticated, at `/.well-known/agent-card.json`) and extended agent cards (authenticated, revealing additional skills). Agentique should fetch extended cards when credentials are available, exposing more tools to authenticated MCP clients.
+```python
+# Default configuration — fully LLM-driven
+router = AgentRouter(agents)                    # uses LLMRouter() by default
+
+# Optional verification gate
+router = AgentRouter(agents, strategy=LLMRouter(enable_verification=True))
+
+# Inside the agent tool:
+selected = await router.aresolve(message=msg, ctx=ctx)   # Plan
+# ... stream from adapter ...                              # Execute
+ok = await router.strategy.averify(msg, response, ctx=ctx)  # Verify
+```
+
+**Key invariants:**
+- `AgentRouter.resolve()` (sync) raises for multi-agent routing — callers must use `aresolve()`
+- Single-agent setups and explicit `name=` targets skip LLM entirely (zero sampling overhead)
+- `_match_agent()` performs exact → case-insensitive → substring matching to handle LLM verbosity
+- `AgentNotFoundError` is raised (not swallowed) when the LLM names an unknown agent
+
+**Future extension — sampling with tool loops**: FastMCP 3.0's `ctx.sample()` supports a `tools` parameter and `tool_choice`, enabling a deeper orchestration loop where the LLM can call gateway tools during routing — for example, calling `inspect` on a candidate agent before committing to it, or calling `agents` to dynamically discover new capabilities. The current Plan→Verify loop is the first step; a full agentic planning loop is a natural next evolution.
 
 ---
 
-## Design patterns for an unopinionated architecture
+### Pillar 2 — Policy-Driven Visibility: Auto-Configuration
 
-Research into top Python libraries reveals consistent patterns for achieving extensibility without imposing opinions. The following patterns should form agentique's architectural backbone.
+**Before**: `AgentVisibility` required explicit manual calls from the MCP client (`enable_agent`, `disable_agent` tools) to control which agents were visible per session. Multi-tenant configuration meant the client had to know about the policy and execute the right tool calls at session start.
 
-**Protocol classes over abstract base classes.** Python's `typing.Protocol` enables structural subtyping — any class with matching methods satisfies the interface without inheriting from a base class. This is how agentique should define its adapter interface:
+**After**: Visibility is **automatically applied** at the gateway boundary based on session metadata. No client cooperation is required. The policy is configured once server-side; the gateway enforces it transparently.
 
-```python
-from typing import Protocol, AsyncIterator, runtime_checkable
+**Three-tier control model:**
 
-@runtime_checkable
-class AgentAdapter(Protocol):
-    async def discover_agents(self) -> list[AgentInfo]: ...
-    async def send_message(self, agent_id: str, message: str, 
-                          context: BridgeContext) -> AsyncIterator[AgentEvent]: ...
-    async def get_task_state(self, task_id: str) -> TaskState: ...
-    async def cancel_task(self, task_id: str) -> None: ...
-```
+1. **Server-level static visibility** — `AgentVisibility.apply()` registers a FastMCP `Visibility` transform that sets the baseline for all sessions.
 
-Users implementing an adapter for OpenAI's Agents API or a custom protocol simply write a class with these methods — no inheritance required. This mirrors PydanticAI's `AbstractToolset` approach, which research identified as the most "unopinionated" agent framework design.
+2. **Policy-driven session visibility** — `AgentVisibility.configure_policy()` defines a `VisibilityPolicy`: a mapping of tenant identifier → allowed agent names. At the start of each `agent` tool invocation, `apply_session_policy()` reads the tenant ID from session metadata and calls `ctx.enable_components()` / `ctx.disable_components()` to configure exactly the right set of agents for that session.
 
-**Middleware chains for processing pipelines.** Following FastMCP 3.0's own middleware pattern and ASGI conventions, agentique should implement a middleware chain at the bridge layer:
+3. **FastMCP middleware filtering** — `TenantVisibilityMiddleware` intercepts every `list_tools` request and filters the tool list to only include tools belonging to the tenant's permitted agents. This is the strongest enforcement layer: the client never even sees tools it cannot use.
 
 ```python
-class BridgeMiddleware(Protocol):
-    async def process(self, request: BridgeRequest, 
-                     call_next: Callable) -> BridgeResponse: ...
+vis = AgentVisibility()
+vis.configure_policy(
+    tenant_header="X-Tenant-ID",
+    tenant_agents={
+        "acme":   ["billing-agent", "crm-agent"],
+        "beta":   ["analytics-agent"],
+    },
+    default_visible=False,   # deny-by-default for unlisted tenants
+)
+server = create_server(agents=agents, visibility=vis)
 ```
 
-This enables users to inject logging, rate limiting, authentication forwarding, message transformation, and caching without modifying core code. Each middleware wraps the next, creating a composable stack identical to Starlette's middleware model.
+Header extraction follows a three-step lookup: `context.state` dict → HTTP `request.headers` → `ctx.get_state()` coroutine, with raw, lowercase, and snake_case variants tried at each step.
 
-**Event hooks via an async event emitter.** Research shows that blinker (Flask/Celery), SQLAlchemy's event system, and LangChain's callback handlers all follow the observer pattern. Agentique should emit events at key lifecycle points:
-
-- `agent.discovered` / `agent.lost` — agent availability changes
-- `tool.called` / `tool.completed` / `tool.failed` — tool invocation lifecycle  
-- `task.created` / `task.state_changed` / `task.completed` — task lifecycle
-- `message.sent` / `message.received` — message flow
-- `stream.chunk` — streaming data
-
-Users subscribe to events for observability, custom metrics, or side effects. Supporting both sync and async handlers with `asyncio.gather()` ensures flexibility.
-
-**Registry pattern with entry points for adapters.** Built-in adapters (A2A, future OpenAI) use a decorator-based registry. Third-party adapters use setuptools entry points:
-
-```python
-# Built-in
-@register_adapter("a2a")
-class A2AAdapter: ...
-
-# Third-party (pyproject.toml)
-[project.entry-points."agentique.adapters"]
-openai = "agentique_openai:OpenAIAdapter"
-```
-
-This mirrors pytest's pluggy-based discovery and Celery's broker/backend URL pattern. Discovery is automatic: `pip install agentique-openai` makes the adapter available.
-
-**Pydantic Settings for layered configuration.** Configuration should use `pydantic_settings.BaseSettings` with environment variable support, `.env` files, and type validation:
-
-```python
-class AgentiqueConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AGENTIQUE_")
-    
-    transport: Literal["stdio", "streamable-http", "sse"] = "streamable-http"
-    host: str = "127.0.0.1"
-    port: int = 8000
-    task_backend: str = "memory://"  # or "redis://..."
-    default_timeout: float = 30.0
-    adapters: dict[str, AdapterConfig] = {}
-```
+**Future extension — dynamic policy from agent cards**: Rather than statically defining `tenant_agents`, the gateway could fetch extended agent cards (authenticated, per-tenant) and derive the visibility policy from the card's declared capabilities. An agent card might include `metadata.tenant_tags`, and the gateway would apply `tag_based=True` visibility automatically. This ties agent self-declaration to access control.
 
 ---
 
-## Concrete code improvements and implementation recommendations
+### Pillar 3 — Transport Refactoring: Streamable HTTP
 
-### Separation of concerns through a layered package structure
+**Before**: `A2AAgentAdapter` contained SSE-specific terminology: `retry_on_disconnect`, `max_resubscribe_attempts`, comments about "SSE disconnection", and a `ConnectionError | OSError` catch tied to EventSource behaviour.
 
-The library should adopt a modular package architecture inspired by LangChain's `core` / `implementations` / `integrations` split:
+**After**: The adapter speaks transport-agnostically. SSE-specific language is replaced with generic HTTP stream resilience semantics.
 
+| Before | After |
+|---|---|
+| `retry_on_disconnect: bool` | `enable_reconnect: bool` |
+| `max_resubscribe_attempts: int` | `max_reconnect_attempts: int` |
+| `except (ConnectionError, OSError)` | `except (ConnectionError, OSError, asyncio.TimeoutError, EOFError)` |
+
+The underlying resubscription logic is unchanged — when a task ID is known and the stream is interrupted, the adapter calls `client.resubscribe(TaskIdParams(id=task_id))` to resume. This is an A2A protocol feature (`tasks/resubscribe`), not an SSE feature.
+
+**Transport priority**: Callers configure the A2A SDK's `ClientConfig` with `supported_transports` to prefer Streamable HTTP and gRPC over legacy JSONRPC. Agentique's adapter is fully transport-agnostic — the A2A SDK handles negotiation.
+
+**Future extension — gRPC as first-class transport**: The A2A SDK now includes `GrpcTransport`. For high-throughput agent deployments, gRPC offers lower latency and bidirectional streaming without HTTP overhead. The gateway should expose `grpc_channel_factory` in `AgentiqueConfig` to allow users to configure gRPC channels with custom credentials, interceptors, and load balancing — all of which are already supported in `A2AClientPool` but not yet surfaced in `AgentiqueConfig` or `create_server()`.
+
+---
+
+### Pillar 4 — Artifacts as First-Class Resources
+
+**Before**: Artifact events from agents were treated identically to message events — their text was appended to the response string and lost after the streaming loop.
+
+**After**: When an agent emits an `artifact` event, the gateway captures it in `TaskManager` and registers it as an MCP Resource with a stable URI.
+
+**MCP Resource URI scheme:**
 ```
-agentique/
-├── core/                    # Protocols, types, interfaces — zero dependencies
-│   ├── protocols.py         # AgentAdapter, ToolMapper, EventHandler protocols
-│   ├── types.py             # AgentInfo, BridgeContext, TaskState, AgentEvent
-│   ├── events.py            # AsyncEventEmitter
-│   └── config.py            # BaseSettings subclasses
-├── bridge/                  # Core bridge logic
-│   ├── provider.py          # AgentProvider (FastMCP Provider)
-│   ├── router.py            # AgentRouter — strategy-based agent selection
-│   ├── translator.py        # MCP ↔ bridge type translation
-│   ├── task_manager.py      # Task lifecycle, state machine, persistence
-│   ├── middleware.py         # BridgeMiddleware chain
-│   └── stream.py            # Streaming adapter (SSE → MCP streaming)
-├── adapters/                # Protocol-specific adapters
-│   ├── a2a/                 # A2A adapter (current A2ABridge, A2AClientFactory)
-│   │   ├── adapter.py       # A2AAgentAdapter implementing AgentAdapter protocol
-│   │   ├── card_parser.py   # AgentCard → AgentInfo + tool/resource/prompt mapping
-│   │   ├── client.py        # A2A SDK client wrapper
-│   │   └── push.py          # Push notification handler
-│   └── base.py              # Reference adapter implementation
-├── server.py                # Main entry point — FastMCP server factory
-├── tools.py                 # Core MCP tools (agent, agents, task, inspect)
-└── contrib/                 # Community adapters, transforms, middleware
+a2a://{task_id}/artifacts/{artifact_id}    — raw content
+a2a://{task_id}/artifacts                  — task artifact catalog
 ```
 
-### Type safety improvements
+During streaming, `ctx.info()` notifies the client immediately when an artifact is ready:
+```python
+if chunk.kind == "artifact" and chunk.text:
+    uri = _tasks.capture_artifact(task_id, art_id, chunk.text, name=event.artifact_name)
+    await ctx.info(f"Artifact available: {uri}")
+```
 
-Every public interface should use generic types. The adapter protocol should be parameterized:
+**`TaskManager` artifact API:**
+```python
+uri     = tasks.capture_artifact(task_id, artifact_id, content, name="report.md")
+content = tasks.get_artifact(task_id, artifact_id)
+meta    = tasks.get_artifact_metadata(task_id, artifact_id)
+listing = tasks.list_artifacts(task_id)
+```
+
+**Future extension — persistent artifact stores**: Artifacts are currently in-memory, lost on server restart. Production deployments need the artifact store backed by the same pluggable `TaskStore` abstraction (Redis, DynamoDB). The MIME type field (`mime_type`) is already captured; full binary artifact support (images, PDFs, code files) requires extending the resource handler to negotiate content type and stream binary data, which is something FastMCP 3.0's resource model supports.
+
+---
+
+## FastMCP 3.0 capabilities not yet fully exploited
+
+Several FastMCP 3.0 features are partially used but could be pushed much further within the gateway model.
+
+### Component transforms beyond Visibility
+
+FastMCP 3.0's `Transform` pipeline supports `Namespace`, `Visibility`, `ToolTransform`, `ResourcesAsTools`, and `PromptsAsTools`. The gateway currently uses `Namespace` and `Visibility`. The remaining transforms offer interesting gateway scenarios:
+
+- **`ToolTransform`**: Rename verbose agent skills into concise, client-friendly tool names. An A2A agent card might expose `billing_agent_generate_invoice_v2`; a `ToolTransform` can present it as `create_invoice` without touching the adapter.
+- **`ResourcesAsTools`**: Expose MCP resources (including artifact resources) as tools, letting clients that cannot read resources directly still access artifact content through a tool call.
+- **`PromptsAsTools`**: Agents with rich prompt libraries can expose their prompts as tools, letting clients compose complex workflows from agent-defined prompt templates.
+
+These are zero-code additions to `create_server()` — users can pass them via the `transforms` parameter today.
+
+### Composition via `mount()` for multi-protocol gateways
+
+FastMCP's `mount()` enables separate bridges — one for A2A agents, one for HTTP agents, one for local agents — composed under a single MCP server with namespace isolation. The `mount_bridge()` helper already exists in `server.py`. The missing piece is a higher-level configuration DSL that lets users declare protocol-per-namespace without writing Python:
 
 ```python
-from typing import TypeVar, Generic
-
-TConfig = TypeVar("TConfig", bound=BaseModel)
-TMessage = TypeVar("TMessage")
-
-class AgentAdapter(Protocol[TConfig]):
-    config: TConfig
-    async def discover_agents(self) -> list[AgentInfo]: ...
+# Desired: declarative multi-protocol gateway
+server = create_server(
+    mounts=[
+        BridgeMount(namespace="a2a",  adapter=A2AAgentAdapter(a2a_agents)),
+        BridgeMount(namespace="http", adapter=HTTPAdapter(http_agents)),
+        BridgeMount(namespace="mcp",  adapter=MCPProxyAdapter("http://remote-mcp")),
+    ]
+)
 ```
 
-Use `Annotated` types for dependency injection alignment with FastMCP 3.0's `Depends()`:
+This is particularly powerful for the `create_proxy()` pattern — wrapping a remote MCP server behind the gateway gives it LLM routing, visibility policies, and artifact registration for free.
+
+### Lifespan composition for agent connection management
+
+FastMCP 3.0's lifespan pipe operator (`lifespan_a | lifespan_b`) enables composing startup/shutdown sequences. The gateway should use this to manage A2A client pool lifecycle, prefetch agent cards on startup, and warm up gRPC channels — all composable without manual ordering. Currently `AgentProvider.lifespan()` handles prefetching; a full lifespan composition would tie `A2AClientPool.close()`, health monitor teardown, and webhook receiver shutdown into a single composable sequence.
+
+### Structured tool output with `outputSchema`
+
+The `agent` tool currently returns a plain string. MCP's `outputSchema` / `structuredContent` allows tools to declare a schema for their return value, giving clients typed access to the response. The `agent` tool should return a structured payload:
 
 ```python
-from fastmcp.dependencies import Depends
-from typing import Annotated
+# Current
+return "".join(text_parts)
 
-AgentRouter = Annotated[BaseRouter, Depends(get_router)]
+# Target — with structured content
+return ToolResult(
+    content="".join(text_parts),
+    structured_content={
+        "task_id": task_id,
+        "agent": resolved.name,
+        "state": tracker.state.value,
+        "artifact_uris": [f"a2a://{task_id}/artifacts/{a['artifact_id']}"
+                          for a in tasks.list_artifacts(task_id)],
+        "response": "".join(text_parts),
+    },
+)
 ```
 
-### Better error handling with typed exceptions
+This gives clients a machine-readable response they can use to immediately query artifacts, track tasks, and chain to subsequent calls — closing the loop between the gateway's resource model and its tool surface.
 
-Define a hierarchy of bridge-specific exceptions that map cleanly to both MCP and A2A error codes:
+---
 
-```python
-class AgentiqueError(Exception):
-    mcp_code: int = -32603  # Internal error
-    a2a_code: int | None = None
+## A2A protocol evolution targets
 
-class AgentNotFoundError(AgentiqueError):
-    mcp_code = -32602  # Invalid params
-    a2a_code = -32001  # TaskNotFound
+### The bidirectional bridge: MCP ↔ A2A ↔ ADK
 
-class AgentUnavailableError(AgentiqueError):
-    mcp_code = -32603
-    
-class InputRequiredError(AgentiqueError):
-    """Maps to A2A input-required state → MCP elicitation"""
-    pass
+Google ADK's dual-direction integration is architecturally important for the gateway's positioning. `McpToolset` consumes MCP servers as ADK tools; `to_a2a()` exposes ADK agents as A2A servers. Agentique sits at the complementary position: consuming A2A agents as MCP tools. Together these create a full bidirectional stack:
+
+```
+MCP Client → Agentique Gateway → A2A Agent (ADK) → McpToolset → other MCP Servers
 ```
 
-### Customizable tool creation from agent cards
+An Agentique gateway in this stack is not just a translator — it is the policy and intelligence layer for the entire chain. Routing decisions made at the gateway propagate through the entire ADK agent's tool graph.
 
-The current `A2ATranslator` maps agent cards to MCP tools. This should be a pluggable `ToolMapper` protocol:
+### A2A v1.0 readiness under Linux Foundation stewardship
+
+A2A's donation to the Linux Foundation signals long-term protocol stability and multi-vendor adoption. The v1.0 specification is expected to formalise the three-binding approach (JSON-RPC, gRPC, REST) and the extensions mechanism. Agentique should track these changes in `adapter.py` and `client.py` rather than absorbing them at higher layers — the adapter is the correct isolation boundary.
+
+The remaining v0.3 → v1.0 gaps to close in the gateway:
+
+- **Typed error codes**: A2A defines specific error codes (`-32001` TaskNotFound, `-32002` ContentTypeNotSupported, `-32003` UnsupportedOperation). The `ErrorMappingMiddleware` partially handles these, but the mapping should be complete and documented — especially for `-32002` and `-32003`, which have no current handler.
+- **Context ID contract enforcement**: A2A mandates that agents reject messages with mismatching `contextId` and `taskId`. The gateway's `ContextManager` tracks the mapping but does not actively validate it on outgoing messages. Adding this validation would prevent hard-to-debug A2A errors from propagating as opaque failures.
+- **`auth-required` → MCP elicitation**: The `auth-required` A2A state currently emits a `ctx.warning()`. The correct MCP response is `ctx.elicit()` with a structured authentication prompt — the gateway should turn the A2A auth challenge into a first-class MCP interaction.
+
+### Push notifications for long-running agent tasks
+
+Push notifications are critical for production deployments where backend agents run for minutes or hours. The current implementation configures push notifications on the A2A server and receives them via `WebhookReceiver`. The missing piece is the MCP side of this loop: when a push notification arrives at the gateway, it should emit an MCP `notifications/tasks/status` event (when MCP Tasks support stabilises) or at minimum write the update into the `TaskManager` store so clients polling `task(id=...)` see current state.
+
+The JWT signing of push notification payloads (via the `token` field in `PushNotificationConfig`) should also be validated on receipt in `WebhookReceiver` — currently the token is generated but not verified.
+
+---
+
+## Expanding the adapter ecosystem (Phase 4)
+
+The adapter layer is the gateway's extensibility surface. Everything above the adapter — routing, visibility, artifact registration, middleware — is protocol-agnostic. The A2A adapter proves the pattern; the second adapter validates it.
+
+### The ToolMapper protocol for agent card translation
+
+The `A2ACardParser` maps agent cards to MCP components (tools, resources, prompts). This mapping is currently fixed. A `ToolMapper` protocol would let users control how agent capabilities become MCP primitives:
 
 ```python
 class ToolMapper(Protocol):
-    def map_agent_to_tools(self, agent: AgentInfo) -> list[ToolDefinition]: ...
-    def map_agent_to_resources(self, agent: AgentInfo) -> list[ResourceDefinition]: ...
-    def map_agent_to_prompts(self, agent: AgentInfo) -> list[PromptDefinition]: ...
+    def map_tools(self, agent: AgentInfo, card: Any) -> list[ToolDefinition]: ...
+    def map_resources(self, agent: AgentInfo, card: Any) -> list[ResourceDefinition]: ...
+    def map_prompts(self, agent: AgentInfo, card: Any) -> list[PromptDefinition]: ...
 ```
 
-A default implementation creates one tool per agent (current behavior). Users can provide mappers that create one tool per skill, flatten sub-agent hierarchies, or apply custom naming conventions. This is registered via the configuration or dependency injection.
+A default implementation creates one tool per agent (current behaviour). Alternative implementations could create one tool per skill (exposing agent granularity), flatten sub-agent hierarchies (collapsing nested agent graphs), or apply custom naming conventions (removing version suffixes, normalising casing). This is the highest-leverage extensibility point for enterprise deployments with complex agent card schemas.
 
-### Pluggable routing strategies
+### Entry point discovery for third-party adapters
 
-The router should be a protocol with swappable implementations:
+The adapter registry pattern (already present as `register_adapter` / `discover_adapters`) should be backed by setuptools entry points:
 
-```python
-class AgentRouter(Protocol):
-    async def select_agent(self, message: str, 
-                          available_agents: list[AgentInfo],
-                          context: BridgeContext) -> AgentInfo: ...
-
-class KeywordRouter:
-    """Routes based on keyword matching against agent skills."""
-    
-class LLMRouter:
-    """Uses ctx.sample() to let the MCP client's LLM choose an agent."""
-    
-class DirectRouter:
-    """Routes to a specifically named agent (for single-agent bridges)."""
+```toml
+# Third-party adapter (pyproject.toml)
+[project.entry-points."agentique.adapters"]
+openai = "agentique_openai:OpenAIAgentsAdapter"
+langchain = "agentique_langchain:LangChainAdapter"
 ```
 
-The `LLMRouter` is particularly powerful — it leverages FastMCP 3.0's `ctx.sample()` to ask the MCP client's own LLM which agent is best suited for a request, returning structured output via `result_type=AgentSelection`.
+Discovery becomes automatic: `pip install agentique-openai` makes the adapter available without any configuration change. This mirrors pytest's pluggy-based discovery and is the correct pattern for a framework that wants to be genuinely unopinionated about backends.
 
-### Testing patterns
+### Test utilities for adapter and gateway validation
 
-Agentique should provide test utilities:
+Every production use of Agentique requires testing routing decisions, middleware behaviour, and artifact capture. The framework should provide:
 
 ```python
-# Test fixtures
-from agentique.testing import MockAdapter, InMemoryBridge, mock_agent_card
+# Protocol compliance: any class with matching methods satisfies AgentAdapter
+from agentique.testing import MockAdapter, assert_adapter_protocol
 
-# Property: adapter protocol compliance
-def test_my_adapter_satisfies_protocol():
+def test_custom_adapter_satisfies_protocol():
     adapter = MyCustomAdapter(config)
-    assert isinstance(adapter, AgentAdapter)  # runtime_checkable Protocol
+    assert_adapter_protocol(adapter)  # validates runtime_checkable Protocol
 
-# Integration test with FastMCP's in-process client
-async def test_bridge_end_to_end():
-    server = create_agentique_server(adapters=[MockAdapter()])
-    async with server.test_client() as client:
-        tools = await client.list_tools()
-        assert len(tools) > 0
+# Integration: FastMCP in-process client
+from agentique.testing import InMemoryBridge
+
+async def test_routing_selects_correct_agent():
+    bridge = InMemoryBridge(agents=[coding_agent, research_agent])
+    async with bridge.client() as client:
+        result = await client.call_tool("agent", {"message": "write a Python function"})
+        assert "coding" in result.structured_content["agent"]
+```
+
+The `runtime_checkable` Protocol on `AgentAdapter` already makes structural validation possible — the test utility just needs to surface this cleanly.
+
+---
+
+## Design principles
+
+### Intelligence is always-on, never optional
+
+The system assumes an LLM is always available for routing. Removing keyword-matching fallbacks is not a loss of functionality; it is a gain in honesty. Deterministic keyword routing produced misleading confidence in routing quality. LLM routing is inherently higher quality and its failure mode (no `ctx.sample()` support) is explicit: `RuntimeError` rather than silent wrong routing.
+
+### Policy enforcement is automatic, not delegated
+
+Multi-tenant visibility used to rely on clients calling `enable_agent` / `disable_agent` tools at session start. The new model enforces policy at the gateway boundary, transparently. Clients cannot bypass it.
+
+### Transports are negotiated, not hardcoded
+
+The adapter is transport-agnostic. The A2A SDK handles transport negotiation. Adding a new transport requires no changes above the adapter layer.
+
+### Artifacts are resources, not ephemeral text
+
+Agents produce valuable artifacts — reports, generated files, structured outputs. Losing them at the end of a streaming call is a failure of the protocol contract. MCP resources with stable URIs make agent-produced content a durable, addressable part of the gateway's capability surface.
+
+### The Protocol class is the extensibility boundary
+
+Every public interface — `AgentAdapter`, `RoutingStrategy`, `ToolMapper`, `TaskStore`, `BridgeMiddleware` — is a `typing.Protocol` with `@runtime_checkable`. Users extend the gateway by implementing these protocols, not by subclassing internal classes. This structural subtyping approach (no forced inheritance) is the correct pattern for a framework that will have third-party ecosystem adapters it cannot anticipate.
+
+---
+
+## Lessons from the framework landscape
+
+Analysis of LangChain, CrewAI, AutoGen, Semantic Kernel, and PydanticAI reveals consistent patterns Agentique should adopt and specific anti-patterns to avoid.
+
+**PydanticAI's `AbstractToolset` is the closest model.** Its `get_tools()` and `call_tool()` mirror exactly what Agentique's adapter layer needs. PydanticAI's generic typing (`Agent[DepsT, OutputT]`) ensures full type safety through the pipeline. Its `MCPServer` and `FastMCPToolset` demonstrate clean MCP integration. Agentique occupies the complementary position of PydanticAI's `FastA2A`.
+
+**Semantic Kernel's Kernel-as-DI-container** pattern maps directly onto Agentique's server factory. The `create_server()` function is Agentique's composition root — the place where adapters, middleware, transforms, routing strategy, and visibility policy converge. It should be designed with the same care as SK's `Kernel`: every dependency injectable, every component replaceable.
+
+**LangChain's Runnable interface** shows the power of a universal composable unit. Every agent in Agentique's registry should support both `send_message()` (collect) and `stream_message()` (yield) — the async equivalents of `.invoke()` and `.stream()`. The `AgentAdapter` protocol already enforces this; it should be the invariant that gates all adapter acceptance.
+
+**What to avoid:**
+- CrewAI's role-based abstractions — too opinionated for a gateway that must be backend-agnostic
+- AutoGen's conversation-as-workflow model — powerful for collaboration, wrong abstraction for a protocol gateway
+- LangChain's proliferating callback handlers — Agentique should have at most 8-10 well-defined lifecycle events: `task.created`, `task.completed`, `task.state_changed`, `tool.called`, `tool.completed`, `tool.failed`, `stream.chunk`, `agent.discovered`, `agent.lost`, `error`
+
+**The callback system pattern** appears in every framework. Agentique's `AsyncEventEmitter` covers this correctly. The remaining gap is making it easy to subscribe from outside the server factory — users should be able to call `server.on("task.completed", my_handler)` rather than passing the emitter instance through `create_server()`.
+
+---
+
+## Protocol convergence: MCP × A2A
+
+### MCP Tasks alignment
+
+MCP's experimental Tasks specification (November 2025) adds asynchronous, long-running operations with states (`working`, `input_required`, `completed`, `failed`, `cancelled`) and `notifications/tasks/status`. This maps almost perfectly to A2A's task lifecycle:
+
+| A2A `TaskState` | MCP Task state |
+|---|---|
+| `submitted` | `working` |
+| `working` | `working` |
+| `input_required` | `input_required` |
+| `completed` | `completed` |
+| `canceled` | `cancelled` |
+| `failed` | `failed` |
+| `auth_required` | `input_required` (with auth elicitation) |
+
+The gateway's `TaskManager` already models these states. When FastMCP stabilises its Tasks support, the `agent_background` tool should emit native MCP task notifications rather than requiring clients to poll the `task(id=...)` tool.
+
+### `agentique://` extension definition
+
+MCP's extensions framework (2025-11-25) enables optional, independently versioned protocol extensions. Agentique should define its own extension URI that carries gateway metadata through MCP interactions:
+
+```python
+# Extension URI: agentique://gateway/v1
+# Payload:
+{
+    "agent_protocol": "a2a",
+    "original_task_id": "...",
+    "agent_card_url": "http://agent:9000/.well-known/agent-card.json",
+    "gateway_version": "0.4.0",
+    "routing_strategy": "llm",
+}
+```
+
+This allows MCP clients aware of the extension to display richer metadata about which agent handled a request and why, enabling debuggability and audit logging at the client layer.
+
+### MCP structured output for the `agent` tool
+
+The `agent` tool should return a structured payload alongside its text content:
+
+```python
+ToolResult(
+    content="".join(text_parts),
+    structured_content={
+        "task_id": task_id,
+        "agent": resolved.name,
+        "state": tracker.state.value,
+        "artifact_uris": [...],
+        "response": "".join(text_parts),
+    },
+)
+```
+
+This gives clients a machine-readable response envelope that enables: immediate artifact retrieval, task state tracking, chaining to subsequent calls, and audit logging — all without parsing free-form text.
+
+---
+
+## Architecture diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  MCP Client (Claude, Cursor, ChatGPT, custom)                        │
+│  - Has sampling capability (required for LLM routing)                │
+└────────────────────────────┬─────────────────────────────────────────┘
+                             │  MCP Protocol (Streamable HTTP / stdio)
+                             ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  FastMCP Server + Middleware Stack                                    │
+│                                                                       │
+│  ┌─────────────────────┐  ┌──────────────────────────────────────┐   │
+│  │ AgentiqueMiddleware  │  │ TenantVisibilityMiddleware           │   │
+│  │ (logging, OTel,     │  │ (filters list_tools by X-Tenant-ID)  │   │
+│  │  event emission)    │  │                                      │   │
+│  └─────────────────────┘  └──────────────────────────────────────┘   │
+│                                                                       │
+│  Core Tools:                    Resources:                            │
+│  ● agent     (LLM-routed)       ● a2a://agents                       │
+│  ● agents    (list registry)    ● a2a://{task}/artifacts/{id}        │
+│  ● task      (query state)      ● a2a://{task}/artifacts             │
+│  ● inspect   (agent hierarchy)  ● a2a://agents/{name}                │
+│  ● agent_background (optional)  + enable_agent / disable_agent tools │
+│                                                                       │
+│  Transforms (composable):                                             │
+│  ● Namespace  ● Visibility  ● ToolTransform  ● ResourcesAsTools      │
+└────────────────────────────┬─────────────────────────────────────────┘
+                             │
+            ┌────────────────┼────────────────┐
+            │                │                │
+            ▼                ▼                ▼
+  ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐
+  │  LLMRouter       │  │ TaskManager  │  │ Context      │
+  │  aselect() PLAN  │  │ + Artifacts  │  │ Manager      │
+  │  averify() VERIFY│  │   capture()  │  │ (session ↔   │
+  │  (ctx.sample())  │  │   get()      │  │  context IDs)│
+  └────────┬─────────┘  └──────┬───────┘  └──────────────┘
+           │                   │
+           └────────┬──────────┘
+                    │
+                    ▼
+     ┌──────────────────────────────────────┐
+     │  MiddlewareChain (Bridge Layer)      │
+     │  Logging → ErrorMapping →            │
+     │  RateLimit → Metrics → custom        │
+     └──────────────────────────────────────┘
+                    │
+                    ▼
+     ┌──────────────────────────────────────┐
+     │  A2AAgentAdapter                     │
+     │  Streamable HTTP / gRPC / JSON-RPC   │
+     │  enable_reconnect=True               │
+     │  tasks/resubscribe on disruption     │
+     │  push notification config            │
+     │  extended card support               │
+     └──────────────────────────────────────┘
+                    │
+      ┌─────────────┼─────────────┐
+      ▼             ▼             ▼
+  A2A Agent    A2A Agent    A2A Agent
+  (gRPC)     (HTTP+JSON)  (JSON-RPC)
+     │
+     ▼
+  ADK Agent → McpToolset → other MCP Servers
+  (bidirectional loop back into any MCP gateway)
 ```
 
 ---
 
-## Lessons from competing frameworks
+## Public API changes (Phase 3.5)
 
-Analysis of LangChain, CrewAI, AutoGen, Semantic Kernel, and PydanticAI reveals consistent patterns that agentique should adopt and specific anti-patterns to avoid.
+### Removed
 
-**LangChain's Runnable interface** demonstrates the power of a universal composable unit — every component implements `.invoke()`, `.ainvoke()`, `.stream()`, enabling LCEL pipe composition (`chain = prompt | llm | parser`). Agentique should ensure its `AgentAdapter` protocol supports both synchronous and streaming variants, and that adapters compose naturally.
+| Symbol | Reason |
+|---|---|
+| `KeywordRouter` | Replaced by LLM routing entirely |
+| `WeightedKeywordRouter` | Replaced by LLM routing entirely |
+| `LLMRouter.fallback` parameter | Hard-deprecated; no deterministic fallback |
+| `A2AAgentAdapter.retry_on_disconnect` | Renamed to `enable_reconnect` |
+| `A2AAgentAdapter.max_resubscribe_attempts` | Renamed to `max_reconnect_attempts` |
 
-**PydanticAI's toolset abstraction is the closest model.** Its `AbstractToolset` with `get_tools()` and `call_tool()` mirrors exactly what agentique's adapter layer needs. PydanticAI's `Agent[DepsT, OutputT]` generic typing ensures full type safety through the entire pipeline. Its `MCPServer` and `FastMCPToolset` classes demonstrate clean MCP integration. Agentique should study PydanticAI's `FastA2A` for design inspiration on A2A server exposure.
+### Added
 
-**Semantic Kernel's Kernel-as-DI-container** pattern is relevant. The Kernel manages AI services, plugins, and configuration centrally while remaining model-agnostic. Agentique's server factory should similarly serve as the composition root where adapters, middleware, transforms, and configuration converge.
-
-**What to avoid:** CrewAI's role-based abstractions are too opinionated for a bridge library — agentique should not impose workflow patterns. AutoGen's conversation-as-workflow model, while powerful for multi-agent collaboration, is too specific. LangChain's frequent API changes and heavy abstraction layers have caused developer friction — agentique should keep its core interface surface small and stable.
-
-**The callback system pattern** appears in every framework: LangChain's `BaseCallbackHandler`, ADK's six callback types, FastMCP's middleware hooks. Agentique should implement **at most 8-10 well-defined lifecycle hooks** rather than proliferating callbacks:
-
-- `on_server_start` / `on_server_stop`
-- `on_agent_discovered` / `on_agent_lost`
-- `before_tool_call` / `after_tool_call`
-- `before_message_send` / `after_message_receive`
-- `on_task_state_change`
-- `on_error`
-
----
-
-## Aligning with MCP and A2A protocol evolution
-
-Both MCP and A2A are evolving rapidly, and agentique must track their trajectories. **MCP's November 2025 spec** added experimental Tasks support — asynchronous, long-running operations with states (`working`, `input_required`, `completed`, `failed`, `cancelled`) and `notifications/tasks/status`. This maps almost perfectly to A2A's task lifecycle, meaning agentique's task bridge becomes simpler as MCP natively supports the concept.
-
-**MCP's structured tool output** (`outputSchema` + `structuredContent`) should be used when translating A2A agent responses. Instead of returning plain text, agentique should define output schemas for its tools — the `agent` tool could return structured JSON with `task_id`, `state`, `response_text`, and `artifacts`.
-
-**MCP's extensions framework** (2025-11-25) enables optional, independently versioned protocol extensions. Agentique could define an `agentique://` extension that carries metadata like `agent_protocol`, `original_task_id`, and `agent_card_url` through MCP interactions.
-
-**A2A's donation to the Linux Foundation** signals long-term stability. The protocol's three-binding approach (JSON-RPC, gRPC, REST) means agentique's adapter should support transport selection. The `ClientConfig(ordered_transports=["JSONRPC", "gRPC"])` pattern from the SDK enables automatic transport negotiation.
-
-**Google ADK's dual-direction integration** is notable: `McpToolset` consumes MCP servers as ADK tools, while `to_a2a()` exposes ADK agents as A2A servers. Agentique occupies the complementary position — consuming A2A agents as MCP tools. Together, these create a full bidirectional bridge: `MCP Client → agentique → A2A → ADK Agent → McpToolset → other MCP servers`.
+| Symbol | Description |
+|---|---|
+| `VisibilityPolicy` | Dataclass defining tenant → agent visibility rules |
+| `TenantVisibilityMiddleware` | FastMCP middleware enforcing `list_tools` filtering |
+| `RoutingStrategy` | Protocol type for custom routing strategies |
+| `AgentVisibility.configure_policy()` | Configure tenant policy on an existing instance |
+| `AgentVisibility.apply_session_policy()` | Apply policy at session init from metadata |
+| `AgentVisibility.build_tenant_middleware()` | Build `TenantVisibilityMiddleware` from policy |
+| `LLMRouter.averify()` | VERIFY phase: validate response via `ctx.sample()` |
+| `AgentRouter.strategy` property | Expose the active routing strategy |
+| `TaskManager.capture_artifact()` | Store an artifact and return its MCP Resource URI |
+| `TaskManager.get_artifact()` | Retrieve artifact content by task + artifact ID |
+| `TaskManager.get_artifact_metadata()` | Full artifact payload including MIME type |
+| `TaskManager.list_artifacts()` | List all artifact metadata for a task |
+| `create_server(visibility=...)` | Wire visibility policy into server at creation time |
 
 ---
 
-## Priority implementation roadmap
+## Roadmap
 
-Based on impact and effort analysis, the following sequence maximizes value:
+**Phase 1 — Foundation** ✅ Complete
+Layered package structure, `AgentAdapter` protocol, `AgentiqueConfig`, `AsyncEventEmitter`, FastMCP Middleware, `Depends()` injection.
 
-**Phase 1 — Foundation refactor (high impact, moderate effort):**
-Restructure into the layered package architecture. Extract the `AgentAdapter` protocol from `A2ABridge`. Implement `AgentiqueConfig` with Pydantic Settings. Add the `AsyncEventEmitter` for lifecycle hooks. Switch to FastMCP 3.0's `Middleware` for logging and auth forwarding. Add `ToolMapper` protocol with default implementation.
+**Phase 2 — FastMCP 3.0 deep integration** ✅ Complete
+Transforms, Visibility, TaskConfig, structured output, Elicitation, OTel, storage backends, session-scoped DI, `mount()` composition.
 
-**Phase 2 — FastMCP 3.0 deep integration (high impact, low effort):**
-Use `Transform` classes for namespace isolation and tool renaming. Implement `Visibility` for session-level agent control. Use `Depends()` for dependency injection. Add `Progress` reporting to background tasks. Configure storage backends for task persistence. Add OpenTelemetry span attributes.
+**Phase 3 — A2A protocol completeness** ✅ Complete
+Push notifications, task resubscription, extended agent cards, auth states, gRPC transport, A2A extensions, context ID mapping.
 
-**Phase 3 — A2A protocol completeness (medium impact, moderate effort):**
-Implement push notification support. Add task resubscription for resilient streaming. Map A2A error codes to MCP errors. Support extended agent cards. Add context ID ↔ MCP session ID mapping. Expose A2A extensions mechanism.
+**Phase 3.5 — Gateway intelligence** ✅ Complete
+Pure LLM routing (Plan→Execute→Verify), policy-driven visibility auto-configuration, Streamable HTTP transport framing, artifacts as first-class MCP Resources.
 
-**Phase 4 — Extensibility and ecosystem (high long-term impact, higher effort):**
-Implement pluggable routing strategies (keyword, LLM-based, direct). Add entry point discovery for third-party adapters. Create a second adapter (OpenAI Agents API or generic HTTP) to validate the protocol abstraction. Publish `agentique-core` as a separate package. Add comprehensive test utilities.
+**Phase 4 — Ecosystem and capability depth** (next)
+
+*Gateway polish:*
+- Structured `outputSchema` on `agent` tool (artifact URIs in response envelope)
+- `agentique://` MCP extension definition for audit metadata
+- Complete A2A error code mapping (`-32002`, `-32003`)
+- `auth-required` → `ctx.elicit()` flow
+- JWT validation in `WebhookReceiver`
+- Persistent artifact store (backed by `TaskStore` abstraction)
+
+*FastMCP depth:*
+- `ToolTransform` / `ResourcesAsTools` / `PromptsAsTools` in `create_server()` helpers
+- Full lifespan composition (pipe operator across pool, health monitor, webhook receiver)
+- `ctx.sample(tools=[...])` for agentic planning loops in the router
+- MCP native task notifications via `notifications/tasks/status`
+
+*Adapter ecosystem:*
+- `ToolMapper` protocol with pluggable implementations (per-skill, flat-hierarchy, custom naming)
+- Entry point discovery for third-party adapters (`agentique.adapters` entry point group)
+- Second adapter (OpenAI Agents API or generic HTTP REST) to validate protocol abstraction
+- `agentique.testing` module: `MockAdapter`, `InMemoryBridge`, `assert_adapter_protocol`
+
+*Packaging and distribution:*
+- `agentique-core` as a separate zero-dependency package (protocols + types only)
+- PyPI packaging, versioned releases, changelog
+- CI/CD pipeline with adapter compliance test matrix
+- Documentation site
+
+---
 
 ## Conclusion
 
-Agentique sits at a uniquely valuable intersection point. MCP has become the dominant client-to-tool protocol with **97 million+ monthly SDK downloads**, A2A is the emerging agent-to-agent standard backed by **150+ organizations**, and FastMCP 3.0 provides a sophisticated server framework with providers, transforms, and middleware. The key architectural insight is that agentique should not be an A2A-specific bridge but a **generic agent protocol gateway** — one where A2A is the first adapter in a pluggable ecosystem.
+Agentique has evolved from a transparent protocol bridge into an **Intelligent Agent Gateway**. The three defining properties of the gateway model are:
 
-The most important technical decisions are: adopt Protocol classes over ABCs for all interfaces (enabling structural subtyping without forced inheritance), use FastMCP 3.0's Transform and Middleware systems instead of reimplementing cross-cutting concerns, implement the full A2A task lifecycle including push notifications and resubscription, and provide a `ToolMapper` protocol so users control how agent capabilities become MCP primitives. The combination of Pydantic Settings for configuration, entry points for adapter discovery, and an async event emitter for lifecycle hooks creates the unopinionated foundation that lets agentique serve diverse use cases — from single-agent wrappers to enterprise multi-protocol agent meshes — without imposing architectural opinions on its users.
+1. **Intelligence is structural, not optional** — LLM routing is the default, not a feature flag. The gateway leverages the client's LLM as a first-class decision engine for every routing choice, and optionally for response verification too.
+
+2. **Policy is enforced at the boundary** — Tenant isolation, access control, and session configuration happen automatically at the gateway. The architecture is zero-trust toward clients regarding policy compliance.
+
+3. **Agent outputs become platform resources** — Artifacts are not ephemeral side effects. They are MCP Resources with stable URIs, making agent-produced content a durable, addressable part of the gateway's capability surface.
+
+The deeper insight is that the gateway model changes the *unit of composition*. In the bridge model, the unit was a message: send one in, receive one out. In the gateway model, the unit is a **session**: the gateway maintains state (task registry, artifact store, context mapping, visibility policy) across the entire session lifetime, and every interaction enriches that state. The MCP client's LLM can reason over that accumulated state — querying artifacts, inspecting agent hierarchies, tracking task progress — making the gateway a shared memory space for human-agent collaboration.
+
+This is the architecture that makes Agentique genuinely valuable at scale: not merely connecting protocols, but providing the intelligence, policy, and persistence layer that turns a collection of independent agents into a coherent, secure, and observable platform.

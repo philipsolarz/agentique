@@ -6,14 +6,21 @@ A2A SDK's message/request types.
 
 Features:
     - Push notification configuration
-    - Task resubscription for resilient streaming
+    - Task resubscription for resilient streaming over Streamable HTTP
     - Extended agent card support (authenticated cards)
     - Auth-required / rejected state handling
     - A2A extension propagation via ``extensions`` parameter
+
+Transport:
+    The adapter communicates with A2A agents over Streamable HTTP
+    (chunked transfer encoding). The A2A SDK client handles the
+    underlying transport negotiation; this adapter does not contain
+    any SSE-specific logic or EventSource retry headers.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from typing import Any, AsyncIterator
@@ -53,14 +60,17 @@ class A2AAgentAdapter:
     """Adapter that bridges agentique to A2A-protocol agents.
 
     Implements the ``AgentAdapter`` protocol via structural subtyping.
+    Communicates with agents over Streamable HTTP (chunked transfer);
+    there is no SSE-specific logic in this adapter.
 
     Args:
         agents: Mapping of agent name to AgentInfo.
         client_pool: Pool managing A2A SDK client instances.
         card_parser: Parser for extracting MCP components from agent cards.
         push_notification_url: Callback URL for push notification delivery.
-        retry_on_disconnect: Enable automatic task resubscription on SSE drops.
-        max_resubscribe_attempts: Maximum resubscription attempts before failing.
+        enable_reconnect: Automatically attempt task resubscription when the
+            HTTP stream is interrupted before the task completes.
+        max_reconnect_attempts: Maximum reconnection attempts before raising.
         extensions: A2A extension URIs to include in outgoing messages.
     """
 
@@ -71,16 +81,16 @@ class A2AAgentAdapter:
         client_pool: A2AClientPool | None = None,
         card_parser: A2ACardParser | None = None,
         push_notification_url: str | None = None,
-        retry_on_disconnect: bool = True,
-        max_resubscribe_attempts: int = 3,
+        enable_reconnect: bool = True,
+        max_reconnect_attempts: int = 3,
         extensions: list[str] | None = None,
     ) -> None:
         self._agents = dict(agents)
         self._pool = client_pool or A2AClientPool()
         self._parser = card_parser or A2ACardParser()
         self._push_url = push_notification_url
-        self._retry_on_disconnect = retry_on_disconnect
-        self._max_resubscribe = max_resubscribe_attempts
+        self._enable_reconnect = enable_reconnect
+        self._max_reconnect = max_reconnect_attempts
         self._extensions = extensions or []
 
     # ---- AgentAdapter protocol ----
@@ -405,6 +415,13 @@ class A2AAgentAdapter:
         metadata: dict[str, Any],
         streaming: bool,
     ) -> AsyncIterator[AgentEvent]:
+        """Iterate events from the A2A agent over Streamable HTTP.
+
+        Consumes the chunked response stream produced by the A2A SDK client.
+        On transient stream disruptions (network errors, timeouts) the method
+        attempts task resubscription up to ``max_reconnect_attempts`` times
+        before propagating the error.
+        """
         last_task_id: str | None = None
 
         if not hasattr(client, "send_message"):
@@ -429,22 +446,22 @@ class A2AAgentAdapter:
                     if event.task_id:
                         last_task_id = event.task_id
                     yield event
-                return  # Completed normally
+                return  # Stream completed normally
 
-            except (ConnectionError, OSError) as exc:
-                # SSE disconnection — try resubscription
+            except (ConnectionError, OSError, asyncio.TimeoutError, EOFError) as exc:
+                # Transient stream disruption — attempt resubscription
                 attempt += 1
                 if (
-                    not self._retry_on_disconnect
-                    or attempt > self._max_resubscribe
+                    not self._enable_reconnect
+                    or attempt > self._max_reconnect
                     or not last_task_id
                 ):
                     raise
 
                 logger.warning(
-                    "Stream disconnected (attempt %d/%d), "
+                    "HTTP stream interrupted (attempt %d/%d), "
                     "resubscribing to task %s",
-                    attempt, self._max_resubscribe, last_task_id,
+                    attempt, self._max_reconnect, last_task_id,
                 )
 
                 resubscribe_fn = getattr(client, "resubscribe", None)
@@ -461,15 +478,13 @@ class A2AAgentAdapter:
                         async for raw_event in result:
                             event = self._translate_event(raw_event)
                             yield event
-                        return  # Resubscription completed
+                        return  # Resubscription completed successfully
                     else:
                         yield self._translate_event(result)
                         return
                 except Exception as resub_exc:
-                    logger.warning(
-                        "Resubscription failed: %s", resub_exc,
-                    )
-                    if attempt >= self._max_resubscribe:
+                    logger.warning("Resubscription failed: %s", resub_exc)
+                    if attempt >= self._max_reconnect:
                         raise exc from resub_exc
                     continue
 
