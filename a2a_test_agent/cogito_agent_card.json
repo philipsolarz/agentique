@@ -1,0 +1,304 @@
+{
+  "name": "CogitoPrime",
+  "description": "Deep reasoning agent with self-awareness of the Agentique MCP-A2A bridge system. Orchestrates 6 specialized sub-agents (Analyst, Creative, Critic, Synthesizer, MetaReasoner, CodebaseExplorer) for rigorous, multi-perspective reasoning grounded in system architecture awareness and actual source code.",
+  "version": "0.4.0",
+  "url": "http://a2a-test-agent:9000",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "extensions": [
+      {
+        "uri": "urn:mcp:extension:tools",
+        "params": {
+          "mcpTools": [
+            {
+              "name": "analyze",
+              "description": "Logical analysis: decompose claims, evaluate evidence, or build reasoning chains.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["analyze_claim", "evaluate_evidence", "chain_of_reasoning"],
+                    "description": "The analysis operation to perform"
+                  },
+                  "claim": {
+                    "type": "string",
+                    "description": "The claim or argument to analyze (for analyze_claim, evaluate_evidence)"
+                  },
+                  "context": {
+                    "type": "string",
+                    "description": "Background context for the analysis"
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "description": "Evidence to evaluate (for evaluate_evidence)"
+                  },
+                  "premises": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of premises (for chain_of_reasoning)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "think_creatively",
+              "description": "Creative reasoning: generate analogies, design thought experiments, or find lateral perspectives.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["generate_analogies", "thought_experiment", "lateral_perspective"],
+                    "description": "The creative reasoning operation to perform"
+                  },
+                  "concept": {
+                    "type": "string",
+                    "description": "The concept to explore (for generate_analogies)"
+                  },
+                  "scenario": {
+                    "type": "string",
+                    "description": "The scenario to explore (for thought_experiment)"
+                  },
+                  "problem": {
+                    "type": "string",
+                    "description": "The problem to approach laterally (for lateral_perspective)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "critique",
+              "description": "Critical analysis: find counterarguments, detect fallacies, or steelman a position.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["find_counterarguments", "detect_fallacies", "steelman"],
+                    "description": "The critical analysis operation to perform"
+                  },
+                  "argument": {
+                    "type": "string",
+                    "description": "The argument to counter or check (for find_counterarguments, detect_fallacies)"
+                  },
+                  "reasoning": {
+                    "type": "string",
+                    "description": "The reasoning to check for fallacies (for detect_fallacies)"
+                  },
+                  "position": {
+                    "type": "string",
+                    "description": "The position to steelman (for steelman)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "synthesize",
+              "description": "Synthesis: integrate perspectives, find common ground, or build organizing frameworks.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["synthesize_perspectives", "find_common_ground", "build_framework"],
+                    "description": "The synthesis operation to perform"
+                  },
+                  "viewpoints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of perspectives to synthesize (for synthesize_perspectives)"
+                  },
+                  "positions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of positions to compare (for find_common_ground)"
+                  },
+                  "concepts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of concepts to organize (for build_framework)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "meta_reason",
+              "description": "Meta-reasoning: evaluate reasoning quality, detect cognitive biases, or reflect on the reasoning process.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["evaluate_reasoning_quality", "detect_biases", "reflect_on_process"],
+                    "description": "The meta-reasoning operation to perform"
+                  },
+                  "chain": {
+                    "type": "string",
+                    "description": "The reasoning chain to evaluate (for evaluate_reasoning_quality)"
+                  },
+                  "reasoning": {
+                    "type": "string",
+                    "description": "The reasoning to check for biases (for detect_biases)"
+                  },
+                  "conversation": {
+                    "type": "string",
+                    "description": "The conversation to reflect on (for reflect_on_process)"
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            {
+              "name": "explore_codebase",
+              "description": "Explore the Agentique source code: list files, read source, or search for patterns.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["list_source_files", "read_source_file", "search_code"],
+                    "description": "The codebase exploration operation to perform"
+                  },
+                  "directory": {
+                    "type": "string",
+                    "description": "Directory to list (for list_source_files)"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "File path to read (for read_source_file)"
+                  },
+                  "start_line": {
+                    "type": "integer",
+                    "description": "Starting line number (for read_source_file, default: 1)"
+                  },
+                  "end_line": {
+                    "type": "integer",
+                    "description": "Ending line number (for read_source_file, 0 = end of file)"
+                  },
+                  "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for (for search_code)"
+                  },
+                  "file_pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files (for search_code, default: '*.py')"
+                  }
+                },
+                "required": ["operation"]
+              }
+            }
+          ],
+          "mcpPrompts": [
+            {
+              "name": "deep_inquiry",
+              "description": "Template for deep philosophical or architectural exploration with full reasoning pipeline",
+              "arguments": [
+                {
+                  "name": "question",
+                  "description": "The question or topic to explore deeply",
+                  "required": true
+                },
+                {
+                  "name": "focus",
+                  "description": "Optional focus area: logic, creativity, critique, synthesis, or meta",
+                  "required": false
+                }
+              ],
+              "template": "Engage in deep reasoning about the following question:\n\n{question}\n\nReasoning approach:\n1. Analyst: Decompose the question logically\n2. Creative: Find novel angles and analogies\n3. Critic: Stress-test the emerging arguments\n4. Synthesizer: Integrate perspectives into a framework\n5. MetaReasoner: Reflect on the quality of reasoning\n\nFocus: {focus}\n\nGround your reasoning in system architecture awareness when relevant."
+            }
+          ],
+          "mcpResources": [
+            {
+              "uri": "cogito://reasoning-agents",
+              "name": "Reasoning Agent Catalog",
+              "description": "Catalog of CogitoPrime's 5 specialized reasoning sub-agents and their capabilities",
+              "mimeType": "application/json"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "logical_analysis",
+      "name": "logical_analysis",
+      "description": "Decompose claims, evaluate evidence, and build logical reasoning chains",
+      "tags": ["logic", "analysis", "deduction", "evidence"]
+    },
+    {
+      "id": "creative_thinking",
+      "name": "creative_thinking",
+      "description": "Generate analogies, design thought experiments, and find lateral perspectives",
+      "tags": ["creativity", "analogies", "lateral_thinking", "innovation"]
+    },
+    {
+      "id": "critical_analysis",
+      "name": "critical_analysis",
+      "description": "Find counterarguments, detect fallacies, and steelman positions",
+      "tags": ["critique", "fallacies", "counterarguments", "steelmanning"]
+    },
+    {
+      "id": "synthesis",
+      "name": "synthesis",
+      "description": "Integrate perspectives, find common ground, and build organizing frameworks",
+      "tags": ["synthesis", "integration", "frameworks", "common_ground"]
+    },
+    {
+      "id": "meta_reasoning",
+      "name": "meta_reasoning",
+      "description": "Evaluate reasoning quality, detect cognitive biases, and reflect on the reasoning process",
+      "tags": ["meta-cognition", "biases", "self-reflection", "quality"]
+    },
+    {
+      "id": "codebase_exploration",
+      "name": "codebase_exploration",
+      "description": "Read, list, and search the Agentique source code for grounded analysis",
+      "tags": ["code", "source", "files", "search"]
+    }
+  ],
+  "metadata": {
+    "author": "Agentique Cogito System",
+    "reasoning_agents": [
+      {
+        "name": "Analyst",
+        "description": "Logic, deduction, and evidence evaluation",
+        "tools": ["analyze_claim", "evaluate_evidence", "chain_of_reasoning"]
+      },
+      {
+        "name": "Creative",
+        "description": "Analogies, thought experiments, and lateral thinking",
+        "tools": ["generate_analogies", "thought_experiment", "lateral_perspective"]
+      },
+      {
+        "name": "Critic",
+        "description": "Counterarguments, fallacy detection, and steelmanning",
+        "tools": ["find_counterarguments", "detect_fallacies", "steelman"]
+      },
+      {
+        "name": "Synthesizer",
+        "description": "Perspective integration, common ground, and framework construction",
+        "tools": ["synthesize_perspectives", "find_common_ground", "build_framework"]
+      },
+      {
+        "name": "MetaReasoner",
+        "description": "Reasoning quality assessment, cognitive bias detection, and process reflection",
+        "tools": ["evaluate_reasoning_quality", "detect_biases", "reflect_on_process"]
+      },
+      {
+        "name": "CodebaseExplorer",
+        "description": "Source code access, file listing, and pattern search",
+        "tools": ["list_source_files", "read_source_file", "search_code"]
+      }
+    ]
+  }
+}

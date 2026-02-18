@@ -17,8 +17,9 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .autonomous_agent import AutonomousTestAgent, TestObjective
 from .mcp_client import MCPTestClient
-from .models import SessionEvent
+from .models import EventType, SessionEvent
 from .recorder import SessionRecorder
 from .scenario import ScenarioRunner, discover_scenarios
 
@@ -35,6 +36,7 @@ class TestHarness:
         self.recorder = SessionRecorder()
         self.client: MCPTestClient | None = None
         self.scenario_runner: ScenarioRunner | None = None
+        self.autonomous_agent: AutonomousTestAgent | None = None
         self._ws_connections: set[WebSocket] = set()
 
     async def start(self) -> None:
@@ -47,6 +49,11 @@ class TestHarness:
         try:
             await self.client.connect()
             self.scenario_runner = ScenarioRunner(self.client, self.recorder)
+            self.autonomous_agent = AutonomousTestAgent(
+                self.client,
+                llm_provider="gemini",
+                simulate=True,
+            )
         except Exception:
             logger.exception("Failed to connect to MCP server at %s", self.mcp_url)
             self.client = None
@@ -123,6 +130,9 @@ class TestHarness:
             case "run_all_scenarios":
                 asyncio.create_task(self._handle_run_all_scenarios())
 
+            case "start_autonomous_agent":
+                asyncio.create_task(self._handle_start_autonomous_agent(data))
+
             case "elicitation_response":
                 response = data.get("response", {"action": "cancel"})
                 await self.client.resolve_elicitation(response)
@@ -162,8 +172,15 @@ class TestHarness:
         if not self.scenario_runner:
             return
         name = data.get("name", "")
+        simulate = data.get("simulate", False)
         self.recorder.clear()
+
+        # Set simulation mode in runner
+        if hasattr(self.scenario_runner, 'simulate'):
+            self.scenario_runner.simulate = simulate
+
         result = await self.scenario_runner.run_scenario(name)
+
         # Broadcast result to all WS clients
         msg = {
             "type": "scenario_result",
@@ -196,6 +213,97 @@ class TestHarness:
                     await ws.send_text(payload)
                 except Exception:
                     pass
+
+    async def _handle_start_autonomous_agent(self, data: dict[str, Any]) -> None:
+        """Start autonomous agent exploration."""
+        if not self.autonomous_agent:
+            return
+
+        # Broadcast status
+        await self._broadcast_event(SessionEvent(
+            type=EventType.AUTONOMOUS_AGENT_STATUS,
+            data={"status": "starting", "message": "Autonomous agent initializing..."},
+        ))
+
+        try:
+            # Get objective from request or use default
+            objective_data = data.get("objective", {})
+            objective = TestObjective(
+                goal=objective_data.get(
+                    "goal",
+                    "Comprehensively test all MCP server capabilities",
+                ),
+                focus_areas=objective_data.get("focus_areas", [
+                    "tool calling",
+                    "agent routing",
+                    "error handling",
+                    "streaming responses",
+                ]),
+                success_criteria=objective_data.get("success_criteria", [
+                    "All tools tested",
+                    "Edge cases discovered",
+                    "No critical bugs",
+                ]),
+            )
+
+            max_actions = data.get("max_actions", 15)
+
+            # Run exploration
+            await self._broadcast_event(SessionEvent(
+                type=EventType.AUTONOMOUS_AGENT_STATUS,
+                data={
+                    "status": "exploring",
+                    "message": f"Starting exploration: {objective.goal}",
+                },
+            ))
+
+            # Hook into agent to broadcast actions and insights
+            original_execute = self.autonomous_agent.execute_action
+
+            async def execute_with_broadcast(action):
+                # Broadcast action
+                await self._broadcast_event(SessionEvent(
+                    type=EventType.AUTONOMOUS_AGENT_ACTION,
+                    data={
+                        "action_type": action.action_type,
+                        "reasoning": action.reasoning,
+                        "parameters": action.parameters,
+                    },
+                ))
+                result = await original_execute(action)
+                return result
+
+            self.autonomous_agent.execute_action = execute_with_broadcast
+
+            # Run autonomous exploration
+            report = await self.autonomous_agent.autonomous_exploration(
+                objective,
+                max_actions=max_actions,
+            )
+
+            # Broadcast completion
+            await self._broadcast_event(SessionEvent(
+                type=EventType.AUTONOMOUS_AGENT_REPORT,
+                data=report,
+            ))
+
+            await self._broadcast_event(SessionEvent(
+                type=EventType.AUTONOMOUS_AGENT_STATUS,
+                data={
+                    "status": "completed",
+                    "message": f"Exploration complete: {report['actions_executed']} actions, {report['insights_discovered']} insights",
+                },
+            ))
+
+        except Exception as exc:
+            logger.exception("Autonomous agent failed")
+            await self._broadcast_event(SessionEvent(
+                type=EventType.AUTONOMOUS_AGENT_STATUS,
+                data={
+                    "status": "failed",
+                    "message": f"Error: {str(exc)}",
+                },
+            ))
 
 
 # --- Global harness instance (set during app creation) ---

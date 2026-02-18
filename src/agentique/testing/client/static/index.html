@@ -31,6 +31,23 @@
 
       <!-- Input area -->
       <div class="input-area">
+        <!-- Simulation Controls (hidden by default) -->
+        <div class="simulation-controls" id="simulationControls" style="display: none;">
+          <div class="sim-status">
+            <span class="sim-indicator">🎬</span>
+            <span class="sim-label">Simulation Active</span>
+          </div>
+          <div class="sim-controls-group">
+            <button class="btn-sim" id="pauseSimulationBtn">⏸️ Pause</button>
+            <div class="speed-control">
+              <label>Speed:</label>
+              <input type="range" id="speedSlider" min="0.5" max="5" step="0.5" value="1">
+              <span id="speedDisplay">1.0x</span>
+            </div>
+            <button class="btn-sim danger" id="stopSimulationBtn">⏹️ Stop</button>
+          </div>
+        </div>
+
         <div class="input-row">
           <input type="text" id="messageInput" placeholder="Type a message..." disabled>
           <button class="btn" id="sendBtn" disabled>Send</button>
@@ -42,6 +59,22 @@
           </select>
           <button class="btn secondary" id="runScenarioBtn" disabled>Run</button>
           <button class="btn secondary" id="runAllBtn" disabled>Run All</button>
+          <label class="scenario-mode-toggle">
+            <input type="checkbox" id="simulationMode" checked>
+            <span>Visual Simulation</span>
+          </label>
+        </div>
+
+        <!-- Autonomous Agent Panel -->
+        <div class="autonomous-panel">
+          <div class="autonomous-header">
+            <span class="autonomous-title">🤖 AI Test Agent</span>
+            <button class="btn-autonomous" id="startAutonomousBtn" disabled>🚀 Start Autonomous Testing</button>
+          </div>
+          <div class="autonomous-status" id="autonomousStatus" style="display: none;">
+            <span class="status-icon">⏳</span>
+            <span class="status-message" id="autonomousStatusMessage">Initializing...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -69,6 +102,7 @@
     </div>
   </div>
 
+  <script src="/static/simulator.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

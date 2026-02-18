@@ -57,18 +57,19 @@ services:
       AGENTIQUE_HOST: 0.0.0.0
       AGENTIQUE_PORT: 8000
 
-      # Agent configuration
-      A2A_AGENT_URL: http://a2a-agent:9000
+      # Agent configuration (format: name=url|skill1,skill2)
+      AGENTIQUE_AGENTS: "root=http://a2a-agent:9000"
 
       # Enable debug logging for interactive testing
       LOG_LEVEL: DEBUG
       AGENTIQUE_DEBUG: "1"
 
     volumes:
-      - ./:/app:ro # Read-only mount for safety
+      - ./src:/app/src:ro  # Mount source code for live reload
+      - /app/.venv          # Keep container's own venv (don't overwrite)
 
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',8000)); s.close()"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -95,7 +96,8 @@ services:
         condition: service_healthy
     environment:
       LOG_LEVEL: INFO
-    command: ["python", "-m", "agentique.testing.client", "--mcp-url", "http://mcp-server:8000/mcp", "--port", "8080"]
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    command: ["uv", "run", "--no-sync", "python", "-m", "agentique.testing.client", "--mcp-url", "http://mcp-server:8000/mcp", "--port", "8080"]
     networks:
       - agentique-interactive
     labels:

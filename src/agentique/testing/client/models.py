@@ -49,6 +49,11 @@ class EventType(str, Enum):
     SCENARIO_END = "scenario_end"
     STEP_START = "step_start"
     STEP_END = "step_end"
+    SIMULATION_EVENT = "simulation_event"
+    AUTONOMOUS_AGENT_STATUS = "autonomous_agent_status"
+    AUTONOMOUS_AGENT_ACTION = "autonomous_agent_action"
+    AUTONOMOUS_AGENT_INSIGHT = "autonomous_agent_insight"
+    AUTONOMOUS_AGENT_REPORT = "autonomous_agent_report"
 
 
 class Assertion(BaseModel):

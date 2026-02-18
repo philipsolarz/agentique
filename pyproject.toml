@@ -34,10 +34,13 @@ test = [
 ui = [
     "uvicorn>=0.30.0",
     "pyyaml>=6.0",
+    "starlette>=0.40.0",
+    "google-generativeai>=0.8.0",
 ]
 
 [project.scripts]
 agentique = "agentique.__main__:main"
+agentique-test-server = "agentique.testing.client.mcp_server:main"
 
 [project.entry-points."agentique.adapters"]
 # Built-in adapters are registered via @register_adapter decorator.

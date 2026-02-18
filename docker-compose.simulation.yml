@@ -1,0 +1,112 @@
+# Docker Compose for the Agentique Simulation system.
+#
+# Runs 4 services:
+#   1. a2a-agent (9000)       - Gemini-powered test agent
+#   2. mcp-server (8000)      - Agentique MCP bridge
+#   3. simulation-ui (8080)   - Observer UI + simulation engine
+#   4. simulator-mcp (8081)   - Simulator MCP Server (for Claude Code)
+#
+# Prerequisites:
+#   - GOOGLE_API_KEY in .env (required for Gemini LLM)
+
+services:
+  # A2A Agent — Gemini-powered agent with sub-agents
+  a2a-agent:
+    build:
+      context: .
+      dockerfile: docker/a2a-test-agent/Dockerfile
+    container_name: agentique-sim-agent
+    ports:
+      - "9000:9000"
+    environment:
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: 9000
+      A2A_BASE_URL: http://a2a-agent:9000
+      A2A_RELOAD: "true"
+      CODEBASE_ROOT: /app/agentique-src
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      ADK_MODEL: ${ADK_MODEL:-gemini-2.0-flash}
+      AGENT_TYPE: ${AGENT_TYPE:-cogito}
+    volumes:
+      - ./a2a_test_agent/agent_card.json:/app/agent_card.json:ro
+      - ./a2a_test_agent/cogito_agent_card.json:/app/cogito_agent_card.json:ro
+      - ./a2a_test_agent/src:/app/src
+      - ./src/agentique:/app/agentique-src:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - agentique-simulation
+
+  # MCP Server — Agentique bridge
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-sim-mcp
+    ports:
+      - "8000:8000"
+    depends_on:
+      a2a-agent:
+        condition: service_healthy
+    environment:
+      AGENTIQUE_TRANSPORT: http
+      AGENTIQUE_HOST: 0.0.0.0
+      AGENTIQUE_PORT: 8000
+      AGENTIQUE_AGENTS: "root=http://a2a-agent:9000"
+      LOG_LEVEL: INFO
+    volumes:
+      - ./src:/app/src
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',8000)); s.close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - agentique-simulation
+
+  # Simulation UI — Observer UI + simulation engine
+  simulation-ui:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-sim-ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: INFO
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    volumes:
+      - ./src:/app/src
+    command: ["uv", "run", "--no-sync", "python", "-m", "agentique.simulation", "--mcp-url", "http://mcp-server:8000/mcp", "--port", "8080"]
+    networks:
+      - agentique-simulation
+
+  # Simulator MCP Server — MCP interface for Claude Code
+  simulator-mcp:
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    container_name: agentique-sim-mcp-server
+    ports:
+      - "8081:8081"
+    depends_on:
+      - simulation-ui
+    environment:
+      LOG_LEVEL: INFO
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    command: ["uv", "run", "--no-sync", "python", "-m", "agentique.simulation.mcp_server", "--simulation-ui-url", "http://simulation-ui:8080", "--transport", "sse", "--host", "0.0.0.0", "--port", "8081"]
+    networks:
+      - agentique-simulation
+
+networks:
+  agentique-simulation:
+    driver: bridge
+    name: agentique-simulation

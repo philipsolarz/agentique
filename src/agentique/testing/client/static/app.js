@@ -22,9 +22,14 @@
   const elicitInput = document.getElementById("elicitInput");
   const elicitSubmitBtn = document.getElementById("elicitSubmitBtn");
   const elicitCancelBtn = document.getElementById("elicitCancelBtn");
+  const startAutonomousBtn = document.getElementById("startAutonomousBtn");
+  const autonomousStatus = document.getElementById("autonomousStatus");
+  const autonomousStatusMessage = document.getElementById("autonomousStatusMessage");
 
   let ws = null;
   let connected = false;
+  let currentThinkingIndicator = null;
+  let simulationMode = true;
 
   // --- WebSocket Connection ---
 
@@ -110,6 +115,31 @@
 
       case "scenario_result":
         showScenarioResult(msg.data);
+        if (window.visualSimulator && window.visualSimulator.isSimulating) {
+          window.visualSimulator.stop();
+        }
+        break;
+
+      case "simulation_event":
+        if (window.handleSimulationEvent) {
+          window.handleSimulationEvent(msg.data);
+        }
+        break;
+
+      case "autonomous_agent_status":
+        handleAutonomousStatus(msg.data);
+        break;
+
+      case "autonomous_agent_action":
+        showAutonomousAction(msg.data);
+        break;
+
+      case "autonomous_agent_insight":
+        showAutonomousInsight(msg.data);
+        break;
+
+      case "autonomous_agent_report":
+        showAutonomousReport(msg.data);
         break;
 
       case "error":
@@ -137,6 +167,9 @@
     scenarioSelect.disabled = !enabled;
     runScenarioBtn.disabled = !enabled;
     runAllBtn.disabled = !enabled;
+    if (startAutonomousBtn) {
+      startAutonomousBtn.disabled = !enabled;
+    }
   }
 
   function scrollMessages() {
@@ -414,17 +447,228 @@
     }
   });
 
-  runScenarioBtn.addEventListener("click", function () {
+  runScenarioBtn.addEventListener("click", async function () {
     const name = scenarioSelect.value;
     if (!name) return;
-    addSystemMessage("Running scenario: " + name);
-    wsSend({ type: "run_scenario", data: { name: name } });
+
+    if (simulationMode && window.visualSimulator) {
+      // Visual simulation mode
+      await window.visualSimulator.startScenario(name);
+      addSystemMessage("🎬 Starting visual simulation: " + name);
+      wsSend({ type: "run_scenario", data: { name: name, simulate: true } });
+    } else {
+      // Headless mode
+      addSystemMessage("Running scenario: " + name);
+      wsSend({ type: "run_scenario", data: { name: name, simulate: false } });
+    }
   });
 
   runAllBtn.addEventListener("click", function () {
     addSystemMessage("Running all scenarios...");
     wsSend({ type: "run_all_scenarios", data: {} });
   });
+
+  // --- Autonomous Agent ---
+
+  if (startAutonomousBtn) {
+    startAutonomousBtn.addEventListener("click", function () {
+      addSystemMessage("🤖 Starting AI-powered autonomous testing...");
+      wsSend({
+        type: "start_autonomous_agent",
+        data: {
+          objective: {
+            goal: "Comprehensively test all MCP server capabilities",
+            focus_areas: [
+              "tool calling",
+              "agent routing",
+              "error handling",
+              "streaming responses"
+            ]
+          },
+          max_actions: 15
+        }
+      });
+    });
+  }
+
+  function handleAutonomousStatus(data) {
+    if (!autonomousStatus || !autonomousStatusMessage) return;
+
+    const status = data.status || "";
+    const message = data.message || "";
+
+    autonomousStatusMessage.textContent = message;
+
+    switch (status) {
+      case "starting":
+      case "exploring":
+        autonomousStatus.style.display = "flex";
+        if (startAutonomousBtn) startAutonomousBtn.disabled = true;
+        break;
+
+      case "completed":
+      case "failed":
+        autonomousStatus.style.display = "none";
+        if (startAutonomousBtn) startAutonomousBtn.disabled = false;
+        addSystemMessage("🤖 " + message);
+        break;
+    }
+  }
+
+  function showAutonomousAction(data) {
+    const card = document.createElement("div");
+    card.className = "ai-action-card";
+
+    const icon = data.action_type === "send_message" ? "💬" : "🔧";
+
+    card.innerHTML = `
+      <div class="action-header">
+        <span class="action-type">${data.action_type}</span>
+        <span class="action-icon">${icon}</span>
+      </div>
+      <div class="action-reasoning">${data.reasoning || ""}</div>
+      <div class="action-params">${JSON.stringify(data.parameters).slice(0, 100)}...</div>
+    `;
+
+    messagesEl.appendChild(card);
+    scrollMessages();
+  }
+
+  function showAutonomousInsight(data) {
+    const card = document.createElement("div");
+    card.className = "ai-insight-card severity-" + (data.severity || "info");
+
+    const evidenceHTML = (data.evidence || []).map(e =>
+      `<div>• ${e}</div>`
+    ).join("");
+
+    card.innerHTML = `
+      <div class="insight-header">
+        <span class="insight-category">${data.category || "insight"}</span>
+        <span class="insight-severity">${data.severity || "info"}</span>
+      </div>
+      <div class="insight-description">${data.description || ""}</div>
+      ${evidenceHTML ? `<div class="insight-evidence">${evidenceHTML}</div>` : ""}
+    `;
+
+    messagesEl.appendChild(card);
+    scrollMessages();
+  }
+
+  function showAutonomousReport(data) {
+    const card = document.createElement("div");
+    card.className = "ai-report-card";
+
+    const successRate = ((data.success_rate || 0) * 100).toFixed(1);
+    const coverage = data.coverage || {};
+    const coveragePercent = coverage.total_tools > 0
+      ? ((coverage.tools_tested / coverage.total_tools) * 100).toFixed(1)
+      : "0";
+
+    const insightsHTML = (data.insights || []).slice(0, 3).map(insight =>
+      `<div style="margin: 4px 0; color: var(--text-muted);">
+        <strong style="color: var(--accent-yellow);">[${insight.category}]</strong> ${insight.description}
+      </div>`
+    ).join("");
+
+    card.innerHTML = `
+      <div class="report-title">🎉 Autonomous Testing Complete</div>
+      <div class="report-stats">
+        <div class="stat">
+          <span class="stat-label">Actions Executed</span>
+          <span class="stat-value">${data.actions_executed || 0}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Success Rate</span>
+          <span class="stat-value">${successRate}%</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Insights Found</span>
+          <span class="stat-value">${data.insights_discovered || 0}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Tool Coverage</span>
+          <span class="stat-value">${coveragePercent}%</span>
+        </div>
+      </div>
+      ${insightsHTML ? `
+        <div class="report-insights">
+          <div class="insights-title">Top Insights:</div>
+          ${insightsHTML}
+        </div>
+      ` : ""}
+    `;
+
+    messagesEl.appendChild(card);
+    scrollMessages();
+  }
+
+  // --- Simulation Controls ---
+
+  const simulationModeCheckbox = document.getElementById("simulationMode");
+  const pauseSimBtn = document.getElementById("pauseSimulationBtn");
+  const stopSimBtn = document.getElementById("stopSimulationBtn");
+  const speedSlider = document.getElementById("speedSlider");
+
+  if (simulationModeCheckbox) {
+    simulationModeCheckbox.addEventListener("change", function () {
+      simulationMode = this.checked;
+    });
+  }
+
+  if (pauseSimBtn && window.visualSimulator) {
+    pauseSimBtn.addEventListener("click", function () {
+      window.visualSimulator.togglePause();
+    });
+  }
+
+  if (stopSimBtn && window.visualSimulator) {
+    stopSimBtn.addEventListener("click", function () {
+      window.visualSimulator.stop();
+      addSystemMessage("Simulation stopped");
+    });
+  }
+
+  if (speedSlider && window.visualSimulator) {
+    speedSlider.addEventListener("input", function () {
+      window.visualSimulator.setSpeed(parseFloat(this.value));
+    });
+  }
+
+  // --- Handle Simulation Events ---
+
+  function handleSimulationEvent(event) {
+    if (!window.visualSimulator || !window.visualSimulator.isSimulating) return;
+
+    const sim = window.visualSimulator;
+
+    switch (event.action) {
+      case "type_message":
+        sim.simulateSendMessage(event.message);
+        break;
+
+      case "show_thinking":
+        currentThinkingIndicator = sim.showThinking();
+        break;
+
+      case "hide_thinking":
+        if (currentThinkingIndicator) {
+          sim.hideThinking(currentThinkingIndicator);
+          currentThinkingIndicator = null;
+        }
+        break;
+
+      case "read_response":
+        const lastMessage = messagesEl.querySelector(".message.agent:last-child");
+        if (lastMessage) {
+          sim.readResponse(lastMessage);
+        }
+        break;
+    }
+  }
+
+  // Expose for WebSocket message handler
+  window.handleSimulationEvent = handleSimulationEvent;
 
   // --- Init ---
   connect();

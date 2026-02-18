@@ -407,79 +407,114 @@ class A2AAgentAdapter:
     ) -> AsyncIterator[AgentEvent]:
         last_task_id: str | None = None
 
-        if hasattr(client, "send_message_streaming") and streaming:
-            request = self._build_streaming_request(message, metadata)
-            attempt = 0
+        if not hasattr(client, "send_message"):
+            raise RuntimeError("A2A client does not expose send_message")
 
-            while True:
-                try:
-                    iterator = client.send_message_streaming(request)
-                    if inspect.isawaitable(iterator):
-                        iterator = await iterator
-                    async for raw_event in iterator:
+        attempt = 0
+
+        while True:
+            try:
+                result = await self._call_send_message(
+                    client, message, metadata=metadata, streaming=streaming,
+                )
+
+                if hasattr(result, "__aiter__"):
+                    async for raw_event in result:
                         event = self._translate_event(raw_event)
                         if event.task_id:
                             last_task_id = event.task_id
                         yield event
-                    return  # Stream completed normally
+                else:
+                    event = self._translate_event(result)
+                    if event.task_id:
+                        last_task_id = event.task_id
+                    yield event
+                return  # Completed normally
 
-                except (ConnectionError, OSError) as exc:
-                    # SSE disconnection — try resubscription
-                    attempt += 1
-                    if (
-                        not self._retry_on_disconnect
-                        or attempt > self._max_resubscribe
-                        or not last_task_id
-                    ):
-                        raise
+            except (ConnectionError, OSError) as exc:
+                # SSE disconnection — try resubscription
+                attempt += 1
+                if (
+                    not self._retry_on_disconnect
+                    or attempt > self._max_resubscribe
+                    or not last_task_id
+                ):
+                    raise
 
+                logger.warning(
+                    "Stream disconnected (attempt %d/%d), "
+                    "resubscribing to task %s",
+                    attempt, self._max_resubscribe, last_task_id,
+                )
+
+                resubscribe_fn = getattr(client, "resubscribe", None)
+                if not callable(resubscribe_fn):
+                    raise
+
+                try:
+                    params = TaskIdParams(id=last_task_id)
+                    result = resubscribe_fn(params)
+                    if inspect.isawaitable(result):
+                        result = await result
+
+                    if hasattr(result, "__aiter__"):
+                        async for raw_event in result:
+                            event = self._translate_event(raw_event)
+                            yield event
+                        return  # Resubscription completed
+                    else:
+                        yield self._translate_event(result)
+                        return
+                except Exception as resub_exc:
                     logger.warning(
-                        "Stream disconnected (attempt %d/%d), "
-                        "resubscribing to task %s",
-                        attempt, self._max_resubscribe, last_task_id,
+                        "Resubscription failed: %s", resub_exc,
                     )
+                    if attempt >= self._max_resubscribe:
+                        raise exc from resub_exc
+                    continue
 
-                    resubscribe_fn = getattr(client, "resubscribe", None)
-                    if not callable(resubscribe_fn):
-                        raise
+    async def _call_send_message(
+        self,
+        client: Any,
+        message: Any,
+        *,
+        metadata: dict[str, Any],
+        streaming: bool,
+    ) -> Any:
+        """Call the client's send_message with the appropriate API style.
 
-                    try:
-                        params = TaskIdParams(id=last_task_id)
-                        result = resubscribe_fn(params)
-                        if inspect.isawaitable(result):
-                            result = await result
-
-                        if hasattr(result, "__aiter__"):
-                            async for raw_event in result:
-                                event = self._translate_event(raw_event)
-                                yield event
-                            return  # Resubscription completed
-                        else:
-                            yield self._translate_event(result)
-                            return
-                    except Exception as resub_exc:
-                        logger.warning(
-                            "Resubscription failed: %s", resub_exc,
-                        )
-                        if attempt >= self._max_resubscribe:
-                            raise exc from resub_exc
-                        continue
-
-        # Non-streaming fallback
-        request = self._build_request(message, metadata)
-        if hasattr(client, "send_message"):
-            result = client.send_message(request)
+        a2a-sdk 0.3.22 BaseClient.send_message() accepts a Message directly
+        with kwargs (configuration, request_metadata). Older or mock clients
+        may accept a SendMessageRequest/MessageSendParams positionally.
+        """
+        # Try a2a-sdk 0.3.22+ BaseClient API first: send_message(Message, **kwargs)
+        try:
+            configuration = MessageSendConfiguration() if MessageSendConfiguration else None
+            result = client.send_message(
+                message,
+                configuration=configuration,
+                request_metadata=metadata,
+            )
             if inspect.isawaitable(result):
                 result = await result
+            return result
+        except TypeError:
+            pass  # Fall back to legacy API
 
-            if hasattr(result, "__aiter__"):
-                async for raw_event in result:
-                    yield self._translate_event(raw_event)
-            else:
-                yield self._translate_event(result)
-            return
+        # Legacy: try send_message_streaming with wrapped request
+        if hasattr(client, "send_message_streaming") and streaming:
+            request = self._build_streaming_request(message, metadata)
+            result = client.send_message_streaming(request)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
 
-        raise RuntimeError("A2A client does not expose send_message")
+        # Legacy: send_message with wrapped request
+        request = self._build_request(message, metadata)
+        result = client.send_message(request)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     def _translate_event(self, raw: Any) -> AgentEvent:
         """Convert a raw A2A SDK event/response into an ``AgentEvent``."""

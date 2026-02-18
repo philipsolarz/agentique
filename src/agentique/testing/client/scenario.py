@@ -61,6 +61,7 @@ class ScenarioRunner:
     ) -> None:
         self.client = client
         self.recorder = recorder
+        self.simulate = False  # Enable visual simulation mode
 
     async def run_scenario(
         self,
@@ -143,11 +144,43 @@ class ScenarioRunner:
         try:
             match step.action:
                 case StepAction.SEND_MESSAGE:
+                    # Emit simulation events for visual animation
+                    if self.simulate:
+                        await self.client._emit(SessionEvent(
+                            type=EventType.SIMULATION_EVENT,
+                            data={
+                                "action": "type_message",
+                                "message": step.message or "",
+                            },
+                        ))
+                        # Give UI time to animate typing
+                        message = step.message or ""
+                        typing_time = len(message) * 0.08 + 0.5  # Approximate typing time
+                        await asyncio.sleep(typing_time)
+
+                        await self.client._emit(SessionEvent(
+                            type=EventType.SIMULATION_EVENT,
+                            data={"action": "show_thinking"},
+                        ))
+
                     result = await self.client.send_message(
                         message=step.message or "",
                         timeout=step.timeout,
                     )
                     response_text = result.get("text", "")
+
+                    if self.simulate:
+                        await self.client._emit(SessionEvent(
+                            type=EventType.SIMULATION_EVENT,
+                            data={"action": "hide_thinking"},
+                        ))
+                        await self.client._emit(SessionEvent(
+                            type=EventType.SIMULATION_EVENT,
+                            data={"action": "read_response"},
+                        ))
+                        # Simulate reading time
+                        reading_time = min(3.0, len(response_text) * 0.02)
+                        await asyncio.sleep(reading_time)
 
                 case StepAction.CALL_TOOL:
                     result = await self.client.call_tool(

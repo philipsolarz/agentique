@@ -49,16 +49,25 @@ def build_app() -> object:
     protocol = os.getenv("A2A_PROTOCOL", "http")
     base_url = os.getenv("A2A_BASE_URL")
 
-    # Build the agent
-    logger.info("Building root agent...")
-    root_agent = build_root_agent()
+    # Build the agent based on AGENT_TYPE
+    agent_type = os.getenv("AGENT_TYPE", "test")
+    logger.info("Building agent (type=%s)...", agent_type)
+
+    if agent_type == "cogito":
+        from .cogito_agent import build_cogito_agent
+        root_agent = build_cogito_agent()
+        default_card = Path(__file__).parent.parent.parent / "cogito_agent_card.json"
+    else:
+        root_agent = build_root_agent()
+        default_card = DEFAULT_AGENT_CARD
+
     logger.info(f"Root agent '{root_agent.name}' built successfully")
 
     # Determine agent card path
     # Priority: environment variable > default path
     agent_card_path = os.getenv("A2A_AGENT_CARD")
-    if not agent_card_path and DEFAULT_AGENT_CARD.exists():
-        agent_card_path = str(DEFAULT_AGENT_CARD)
+    if not agent_card_path and default_card.exists():
+        agent_card_path = str(default_card)
         logger.info(f"Using default agent card: {agent_card_path}")
 
     # If base URL is provided, use it to construct the host and port
@@ -112,16 +121,25 @@ def main() -> None:
     logger.info(f"Starting A2A server on {host}:{port}")
     logger.info(f"Reload enabled: {reload_enabled}")
 
-    app = build_app()
-
-    # Run the server
-    uvicorn.run(
-        app,
-        host=host,
-        port=port,
-        reload=reload_enabled,
-        log_level="info",
-    )
+    if reload_enabled:
+        # Use import string + factory for reload to detect file changes
+        uvicorn.run(
+            "adk_test_agent.server:build_app",
+            factory=True,
+            host=host,
+            port=port,
+            reload=True,
+            reload_dirs=["/app/src"],
+            log_level="info",
+        )
+    else:
+        app = build_app()
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            log_level="info",
+        )
 
 
 if __name__ == "__main__":

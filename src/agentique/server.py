@@ -183,7 +183,7 @@ def create_server(
         _config: AgentiqueConfig = Depends(get_config),
         _emitter: AsyncEventEmitter = Depends(get_emitter),
         _ctx_mgr: ContextManager = Depends(get_context_manager),
-    ):
+    ) -> str:
         """Send a message to an A2A agent and stream the response.
 
         Args:
@@ -213,6 +213,11 @@ def create_server(
                 metadata["conversation_history"] = history
 
         await _emitter.emit("task.created", task_id=task_id)
+
+        # Collect text chunks (FastMCP 3.0b1 does not consume async generators
+        # from tool functions — it stringifies the generator object instead.
+        # We collect chunks and return the joined text.)
+        text_parts: list[str] = []
 
         try:
             # Use aresolve for LLM-capable routing
@@ -274,7 +279,7 @@ def create_server(
                                 index += 1
                                 if follow_chunk.kind in {"message", "artifact"} and follow_chunk.text:
                                     await _emitter.emit("stream.chunk", chunk=follow_chunk)
-                                    yield follow_chunk.text
+                                    text_parts.append(follow_chunk.text)
                     except Exception as elicit_exc:
                         logger.warning("Elicitation failed: %s", elicit_exc)
 
@@ -285,10 +290,10 @@ def create_server(
                         "Provide credentials via context metadata."
                     )
 
-                # Yield content
+                # Collect content
                 if chunk.kind in {"message", "artifact"} and chunk.text:
                     await _emitter.emit("stream.chunk", chunk=chunk)
-                    yield chunk.text
+                    text_parts.append(chunk.text)
 
         finally:
             if not tracker.state.is_terminal:
@@ -308,6 +313,8 @@ def create_server(
                 await _tasks.set_hierarchy(task_id, hierarchy)
 
             await _emitter.emit("task.completed", task_id=task_id)
+
+        return "".join(text_parts)
 
     @mcp.tool(name="agents")
     def agents_tool(

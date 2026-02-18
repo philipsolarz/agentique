@@ -32,11 +32,13 @@ from .agent import (
     TASK_STATE_FAILED,
     TASK_STATE_CANCELED,
 )
+from .cogito_agent import build_cogito_agent
 from .server import build_app, main
 
 __all__ = [
-    # Agent builder
+    # Agent builders
     "build_root_agent",
+    "build_cogito_agent",
     # Server utilities
     "build_app",
     "main",

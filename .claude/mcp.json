@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "agentique-simulator": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "agentique.simulation.mcp_server",
+        "--mcp-url",
+        "http://localhost:8000/mcp"
+      ],
+      "cwd": "/home/cairon/git/AgentMCP",
+      "env": {
+        "GOOGLE_API_KEY": "${GOOGLE_API_KEY}"
+      }
+    }
+  }
+}
