@@ -1,86 +1,16 @@
-# Docker Compose configuration for AgentMCP
-# Orchestrates the A2A test agent and MCP server for end-to-end testing
-
 services:
-  # A2A Test Agent Service
-  # Multi-agent system built with Google ADK, exposed via A2A protocol
-  a2a-test-agent:
-    build:
-      context: .
-      dockerfile: docker/a2a-test-agent/Dockerfile
-    container_name: agentmcp-a2a-test-agent
-    ports:
-      - "9000:9000"
-    environment:
-      # Server configuration
-      A2A_HOST: 0.0.0.0
-      A2A_PORT: 9000
-      A2A_PROTOCOL: http
-      # Base URL for the agent card (important for Docker networking)
-      # This should be the URL where the agent is accessible from other services
-      A2A_BASE_URL: http://a2a-test-agent:9000
-
-      # Development options
-      # Uncomment to enable live reload during development
-      # A2A_RELOAD: "1"
-
-      # Google AI configuration (required for agent functionality)
-      # You must provide a valid Google API key for the agent to work
-      # Get your API key from: https://makersuite.google.com/app/apikey
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-
-      # Model configuration
-      # Default: gemini-2.0-flash (recommended for testing)
-      # Other options: gemini-2.5-flash, gemini-2.0-flash-exp
-      ADK_MODEL: ${ADK_MODEL:-gemini-2.0-flash}
-
-    # Mount for development (allows live code updates with A2A_RELOAD=1)
-    volumes:
-      - ./a2a_test_agent:/app
-
-    # Health check to ensure agent is ready
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-    networks:
-      - agentmcp-network
-
-  # MCP Server Service
-  # FastMCP 3.0 server that bridges MCP clients to A2A agents
   mcp-server:
     build:
       context: .
       dockerfile: docker/mcp/Dockerfile
-    container_name: agentmcp-mcp-server
+    container_name: agentique-mcp-server
     ports:
       - "8000:8000"
-    depends_on:
-      a2a-test-agent:
-        condition: service_healthy
     environment:
-      # Transport configuration
       AGENTIQUE_TRANSPORT: http
       AGENTIQUE_HOST: 0.0.0.0
       AGENTIQUE_PORT: 8000
-
-      # Agent configuration
-      # Format: name=url|skill1,skill2,skill3
-      # The URL must match the A2A agent's internal Docker network address
-      AGENTIQUE_AGENTS: root=http://a2a-test-agent:9000|calculator,data_processing,text_manipulation,info_retrieval
-
-    # Mount for development
+      AGENTIQUE_AGENTS: ${AGENTIQUE_AGENTS:-}
     volumes:
-      - ./:/app
-
-    networks:
-      - agentmcp-network
-
-# Network configuration
-networks:
-  agentmcp-network:
-    driver: bridge
-    name: agentmcp-network
+      - ./src:/app/src:ro
+    restart: unless-stopped
