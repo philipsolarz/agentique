@@ -141,6 +141,44 @@ class A2ACardParser:
                 return val
         return None
 
+    def extract_security_schemes(self, card: Any) -> "dict[str, Any]":
+        """Return a ``{name: SecuritySchemeInfo}`` mapping from an agent card.
+
+        Handles both Pydantic ``AgentCard`` objects and plain dicts.  Returns
+        an empty dict if the card has no ``security_schemes`` field or if any
+        parsing error occurs.
+        """
+        from agentique.bridge.auth import SecuritySchemeInfo, parse_security_scheme
+
+        try:
+            # Fast path: Pydantic AgentCard with the attribute set
+            raw: Any = None
+            if hasattr(card, "security_schemes"):
+                raw = card.security_schemes
+            if raw is None:
+                payload = self._to_dict(card)
+                raw = (
+                    payload.get("security_schemes")
+                    or payload.get("securitySchemes")
+                    or {}
+                )
+            if not raw:
+                return {}
+            if not isinstance(raw, dict):
+                return {}
+            result: dict[str, SecuritySchemeInfo] = {}
+            for name, scheme in raw.items():
+                try:
+                    result[name] = parse_security_scheme(name, scheme)
+                except Exception:
+                    logger.debug(
+                        "Failed to parse security scheme '%s'; skipping", name
+                    )
+            return result
+        except Exception:
+            logger.debug("Failed to extract security schemes from card")
+            return {}
+
     def _collect(self, d: dict[str, Any], *keys: str) -> list[Any]:
         for key in keys:
             val = d.get(key)

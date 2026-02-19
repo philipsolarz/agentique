@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class _CardCache:
     """Cached agent card with parsed component definitions."""
 
-    __slots__ = ("card", "tools", "prompts", "resources", "fetched_at")
+    __slots__ = ("card", "tools", "prompts", "resources", "security_schemes", "fetched_at")
 
     def __init__(
         self,
@@ -38,11 +38,13 @@ class _CardCache:
         tools: list[dict[str, Any]],
         prompts: list[dict[str, Any]],
         resources: list[dict[str, Any]],
+        security_schemes: dict[str, Any] | None = None,
     ) -> None:
         self.card = card
         self.tools = tools
         self.prompts = prompts
         self.resources = resources
+        self.security_schemes: dict[str, Any] = security_schemes or {}
         self.fetched_at = time.monotonic()
 
 
@@ -104,7 +106,10 @@ class AgentProvider(Provider):
             if card is None:
                 return None
             tools, prompts, resources = self._parser.extract_components(card)
-            entry = _CardCache(card, tools, prompts, resources)
+            security_schemes: dict[str, Any] = {}
+            if hasattr(self._parser, "extract_security_schemes"):
+                security_schemes = self._parser.extract_security_schemes(card)
+            entry = _CardCache(card, tools, prompts, resources, security_schemes)
             async with self._lock:
                 self._cache[agent_name] = entry
             return entry
@@ -344,6 +349,11 @@ class AgentProvider(Provider):
     async def get_agent_card(self, name: str) -> Any | None:
         cached = await self._fetch_card(name)
         return cached.card if cached else None
+
+    async def get_security_schemes(self, name: str) -> dict[str, Any]:
+        """Return cached security schemes for an agent, or ``{}`` if unknown."""
+        cached = await self._fetch_card(name)
+        return cached.security_schemes if cached else {}
 
     @property
     def adapter(self) -> Any:

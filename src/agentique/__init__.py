@@ -67,6 +67,14 @@ from .bridge.middleware import (
     MiddlewareChain,
     RateLimitMiddleware,
 )
+from .bridge.auth import (
+    ApiKeyCredentials,
+    BearerCredentials,
+    OAuthCodeCredentials,
+    SecuritySchemeInfo,
+    parse_security_scheme,
+    select_auth_elicitation,
+)
 from .bridge.context_manager import ContextManager
 from .bridge.dependencies import (
     clear as clear_dependencies,
@@ -175,6 +183,13 @@ __all__ = [
     "DefaultToolMapper",
     "FlatHierarchyToolMapper",
     "PerSkillToolMapper",
+    # Auth schemes
+    "ApiKeyCredentials",
+    "BearerCredentials",
+    "OAuthCodeCredentials",
+    "SecuritySchemeInfo",
+    "parse_security_scheme",
+    "select_auth_elicitation",
     # Bridge
     "AgentProvider",
     "AgentRouter",

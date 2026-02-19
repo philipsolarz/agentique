@@ -48,6 +48,7 @@ from .core.types import (
     TaskState,
 )
 from .adapters.a2a import A2AAgentAdapter, A2AClientPool, A2ACardParser
+from .bridge.auth import select_auth_elicitation
 from .bridge.context_manager import ContextManager
 from .bridge.dependencies import (
     clear as clear_deps,
@@ -436,25 +437,35 @@ def create_server(
                     except Exception as elicit_exc:
                         logger.warning("Elicitation failed: %s", elicit_exc)
 
-                # Handle auth-required state via elicitation
+                # Handle auth-required state via scheme-aware elicitation
                 if chunk.state == "auth-required":
-                    auth_prompt = (
-                        chunk.text
-                        or "The agent requires authentication. "
-                           "Please provide your credentials."
+                    _agent_name = (
+                        resolved.name if resolved is not None else (target or "")
                     )
+                    _schemes = await provider.get_security_schemes(_agent_name)
+                    elicit_msg, elicit_type = select_auth_elicitation(_schemes)
+                    # Prepend agent-provided text when present
+                    if chunk.text:
+                        elicit_msg = (
+                            chunk.text + "\n\n" + elicit_msg
+                            if _schemes
+                            else chunk.text
+                        )
                     try:
                         elicit_result = await ctx.elicit(
-                            auth_prompt,
-                            response_type=None,
+                            elicit_msg,
+                            response_type=elicit_type,
                         )
                         if hasattr(elicit_result, "data") and elicit_result.data:
-                            credentials = str(elicit_result.data)
+                            data = elicit_result.data
+                            if isinstance(data, dict):
+                                cred_meta = data
+                            elif hasattr(data, "model_dump"):
+                                cred_meta = data.model_dump()
+                            else:
+                                cred_meta = {"credentials": str(data)}
                             bridge_ctx = bridge_ctx.replace(
-                                meta={
-                                    **(bridge_ctx.meta or {}),
-                                    "credentials": credentials,
-                                }
+                                meta={**(bridge_ctx.meta or {}), **cred_meta}
                             )
                     except Exception as auth_exc:
                         logger.warning(
@@ -800,6 +811,76 @@ def create_server(
             "session_state_persistent": session_state_store is not None,
         }
         return json.dumps(data, indent=2)
+
+    # ---- Per-agent card resource ----
+
+    @mcp.resource("a2a://agent/{name}")
+    async def agent_card_resource(name: str) -> str:
+        """Return full agent card metadata for a specific agent.
+
+        Exposes skills (with input/output modes), security requirements,
+        provider info, and version. Use this to discover what credentials
+        an agent requires before calling it.
+
+        Args:
+            name: The agent name (must be registered in this gateway).
+        """
+        try:
+            info = router.resolve(name=name, message="")
+        except Exception:
+            return json.dumps(
+                {"error": f"Agent '{name}' not found", "name": name},
+                indent=2,
+            )
+
+        card = await provider.get_agent_card(name)
+        schemes = await provider.get_security_schemes(name)
+
+        payload: dict[str, Any] = {
+            "name": name,
+            "base_url": info.base_url,
+            "description": info.description,
+            "skills": list(info.skills),
+        }
+
+        if card is not None:
+            card_dict = card_parser._to_dict(card)
+            payload["version"] = card_dict.get("version")
+            payload["provider"] = card_dict.get("provider")
+            raw_skills = card_dict.get("skills") or []
+            payload["skill_details"] = [
+                {
+                    "id": (s.get("id") if isinstance(s, dict) else getattr(s, "id", "")),
+                    "name": (s.get("name") if isinstance(s, dict) else getattr(s, "name", "")),
+                    "description": (
+                        s.get("description") if isinstance(s, dict)
+                        else getattr(s, "description", None)
+                    ),
+                    "input_modes": (
+                        s.get("input_modes") or s.get("inputModes")
+                        if isinstance(s, dict)
+                        else getattr(s, "input_modes", None)
+                    ),
+                    "output_modes": (
+                        s.get("output_modes") or s.get("outputModes")
+                        if isinstance(s, dict)
+                        else getattr(s, "output_modes", None)
+                    ),
+                }
+                for s in raw_skills
+                if isinstance(s, dict) or hasattr(s, "name")
+            ]
+
+        payload["security_schemes"] = {
+            n: {
+                "type": si.scheme_type,
+                "auth_url": si.auth_url,
+                "description": si.description,
+            }
+            for n, si in schemes.items()
+        }
+
+        return json.dumps(payload, indent=2)
 
     # ---- Task catalog resource ----
 
