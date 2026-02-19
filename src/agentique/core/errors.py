@@ -50,3 +50,31 @@ class TranslationError(AgentiqueError):
     """Failed to translate between MCP and agent protocol types."""
 
     mcp_code: int = -32603
+
+
+class ContentTypeNotSupportedError(AgentiqueError):
+    """The content type in the request is not supported by the agent (A2A -32002)."""
+
+    mcp_code: int = -32600  # Invalid Request
+    a2a_code: int = -32002
+
+
+class UnsupportedOperationError(AgentiqueError):
+    """The requested operation is not supported by the agent (A2A -32003)."""
+
+    mcp_code: int = -32601  # Method Not Found
+    a2a_code: int = -32003
+
+
+class TaskNotCancelableError(AgentiqueError):
+    """The task cannot be cancelled in its current state (A2A -32004)."""
+
+    mcp_code: int = -32603
+    a2a_code: int = -32004
+
+
+class PushNotificationNotSupportedError(AgentiqueError):
+    """The agent does not support push notifications (A2A -32005)."""
+
+    mcp_code: int = -32601  # Method Not Found
+    a2a_code: int = -32005

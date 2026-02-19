@@ -67,6 +67,10 @@ class TaskManager:
         tracker = await self.get(task_id)
         tracker.hierarchy = hierarchy
 
+    async def list_tasks(self) -> list[str]:
+        """Return all task IDs currently in the store."""
+        return await self._store.list_ids()
+
     # ---- Artifact capture & retrieval ----
 
     def capture_artifact(

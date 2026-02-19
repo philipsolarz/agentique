@@ -43,12 +43,14 @@ class AgentMessageOutput(BaseModel):
     """Structured output for the ``agent`` tool response."""
 
     agent: str = Field(description="Name of the agent that responded")
-    text: str = Field(description="The agent's response text")
     task_id: str | None = Field(None, description="Task ID for this interaction")
     context_id: str | None = Field(None, description="Context ID for conversation continuity")
     state: str = Field("completed", description="Final task state")
+    response: str = Field("", description="The agent's response text")
+    artifact_uris: list[str] = Field(default_factory=list, description="Artifact URIs")
     event_count: int = Field(0, description="Number of events received")
-    has_artifacts: bool = Field(False, description="Whether the response includes artifacts")
+    has_artifacts: bool = Field(False, description="Whether response includes artifacts")
+    mcp_related_task: str | None = Field(None, description="MCP related-task correlation ID")
 
     @classmethod
     def json_schema(cls) -> dict[str, Any]:
@@ -182,6 +184,33 @@ class WebhookNotificationOutput(BaseModel):
     agent_id: str = Field(description="Source agent")
     task_id: str | None = Field(None, description="Related task ID")
     kind: str = Field("status", description="Notification kind")
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        """Return the JSON Schema for MCP outputSchema."""
+        return cls.model_json_schema()
+
+
+# ---------------------------------------------------------------------------
+# Task listing output
+# ---------------------------------------------------------------------------
+
+
+class TaskSummary(BaseModel):
+    """Summary of a single tracked task."""
+
+    task_id: str = Field(description="Task identifier")
+    context_id: str | None = Field(None, description="Associated context ID")
+    state: str = Field(description="Current task state")
+    event_count: int = Field(0, description="Number of events received")
+    artifact_count: int = Field(0, description="Number of artifacts")
+
+
+class TaskListOutput(BaseModel):
+    """Structured output for the ``a2a://tasks`` resource."""
+
+    tasks: list[TaskSummary] = Field(default_factory=list, description="All tracked tasks")
+    count: int = Field(0, description="Total number of tasks")
 
     @classmethod
     def json_schema(cls) -> dict[str, Any]:

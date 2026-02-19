@@ -37,9 +37,13 @@ from .core.errors import (
     AdapterError,
     AgentNotFoundError,
     AgentUnavailableError,
+    ContentTypeNotSupportedError,
     InputRequiredError,
+    PushNotificationNotSupportedError,
+    TaskNotCancelableError,
     TaskNotFoundError,
     TranslationError,
+    UnsupportedOperationError,
 )
 from .core.events import AsyncEventEmitter, EventHook
 from .core.protocols import AdapterFactory, AgentAdapter, BridgeMiddleware, ToolMapper
@@ -80,6 +84,11 @@ from .bridge.dependencies import (
     clear_session_overrides,
 )
 from .bridge.fastmcp_middleware import AgentiqueMiddleware
+from .bridge.lifespans import (
+    compose_lifespans,
+    make_cleanup_lifespan,
+    make_health_monitor_lifespan,
+)
 from .bridge.health import AgentHealth, HealthMonitor
 from .bridge.output_models import (
     AgentHealthOutput,
@@ -89,13 +98,35 @@ from .bridge.output_models import (
     AgentSummary,
     ErrorOutput,
     HealthCheckOutput,
+    SubAgentSummary,
+    TaskListOutput,
     TaskStatusOutput,
+    TaskSummary,
     WebhookNotificationOutput,
 )
 from .bridge.persistent_stores import DynamoDBTaskStore, RedisTaskStore
 from .bridge.storage import InMemoryTaskStore, TaskStore
 from .bridge.visibility import AgentVisibility, TenantVisibilityMiddleware, VisibilityPolicy
 from .bridge.webhook import PushNotification, WebhookReceiver
+
+# Extensions passthrough
+from .extensions import (
+    ALL_EXTENSION_URIS,
+    MCP_SESSION_URI,
+    POLICY_CONTEXT_URI,
+    ROUTING_METADATA_URI,
+    TRACE_CONTEXT_URI,
+    build_gateway_metadata,
+    current_trace_context,
+    pack_mcp_session,
+    pack_policy_context,
+    pack_routing_metadata,
+    pack_trace_context,
+    unpack_mcp_session,
+    unpack_policy_context,
+    unpack_routing_metadata,
+    unpack_trace_context,
+)
 
 # Server factory
 from .server import create_server, mount_bridge
@@ -186,7 +217,10 @@ __all__ = [
     "AgentSummary",
     "ErrorOutput",
     "HealthCheckOutput",
+    "SubAgentSummary",
+    "TaskListOutput",
     "TaskStatusOutput",
+    "TaskSummary",
     "WebhookNotificationOutput",
     # Persistent stores
     "DynamoDBTaskStore",
@@ -198,6 +232,31 @@ __all__ = [
     # Webhooks
     "PushNotification",
     "WebhookReceiver",
+    # Lifespans
+    "compose_lifespans",
+    "make_cleanup_lifespan",
+    "make_health_monitor_lifespan",
+    # Extensions
+    "ALL_EXTENSION_URIS",
+    "MCP_SESSION_URI",
+    "POLICY_CONTEXT_URI",
+    "ROUTING_METADATA_URI",
+    "TRACE_CONTEXT_URI",
+    "build_gateway_metadata",
+    "current_trace_context",
+    "pack_mcp_session",
+    "pack_policy_context",
+    "pack_routing_metadata",
+    "pack_trace_context",
+    "unpack_mcp_session",
+    "unpack_policy_context",
+    "unpack_routing_metadata",
+    "unpack_trace_context",
+    # Errors (new)
+    "ContentTypeNotSupportedError",
+    "PushNotificationNotSupportedError",
+    "TaskNotCancelableError",
+    "UnsupportedOperationError",
     # Server
     "create_server",
     "mount_bridge",

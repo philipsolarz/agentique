@@ -33,3 +33,13 @@ agentique = "agentique.__main__:main"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+# anyio-based async tests — no asyncio_mode needed (anyio handles both backends)
+
+[dependency-groups]
+dev = [
+    "anyio[trio]>=4.0",
+    "pytest>=9.0",
+    "pytest-cov>=5.0",
+]

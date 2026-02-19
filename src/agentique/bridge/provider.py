@@ -64,6 +64,7 @@ class AgentProvider(Provider):
         card_parser: Any | None = None,
         cache_ttl: float = 300.0,
         prefetch_cards: bool = True,
+        tool_mapper: Any | None = None,  # optional ToolMapper protocol
     ) -> None:
         super().__init__()
         self._agents = {a.name: a for a in agents}
@@ -72,6 +73,7 @@ class AgentProvider(Provider):
         self._prefetch = prefetch_cards
         self._cache: dict[str, _CardCache] = {}
         self._lock = asyncio.Lock()
+        self._tool_mapper = tool_mapper  # None → use _make_agent_tool default
 
         if card_parser is None:
             from agentique.adapters.a2a.card_parser import A2ACardParser
@@ -115,8 +117,18 @@ class AgentProvider(Provider):
     async def _list_tools(self) -> Sequence[Tool]:
         tools: list[Tool] = []
         for name, info in self._agents.items():
-            tools.append(self._make_agent_tool(info))
+            if self._tool_mapper is not None:
+                # ToolMapper controls the base tool name/description/structure
+                mapper_defs = self._tool_mapper.map_tools(info)
+                for tdef in mapper_defs:
+                    tool = self._make_tool_from_mapper_def(name, tdef)
+                    if tool:
+                        tools.append(tool)
+            else:
+                # Default: one tool per agent (named after the agent)
+                tools.append(self._make_agent_tool(info))
 
+            # Card-derived proxy tools are always included alongside base tools
             cached = await self._fetch_card(name)
             if cached:
                 for tdef in cached.tools:
@@ -167,6 +179,41 @@ class AgentProvider(Provider):
         handler.__name__ = agent_name
         handler.__doc__ = desc
         return FunctionTool.from_function(handler, name=agent_name, description=desc)
+
+    def _make_tool_from_mapper_def(
+        self, agent_name: str, tool_def: dict[str, Any],
+    ) -> Tool | None:
+        """Create a FunctionTool from a ToolMapper-produced definition.
+
+        Like ``_make_agent_tool`` but driven by a mapper dict so users can
+        control the tool name, description, and multi-tool-per-agent layouts
+        (e.g. one tool per skill via ``PerSkillToolMapper``).
+
+        All mapper tools accept a ``message: str`` parameter and delegate
+        to ``adapter.send_message(agent_name, message, ctx)``.
+        """
+        tool_name = _read(tool_def, "name", "tool_name", "id")
+        if not tool_name:
+            return None
+        desc = _read(tool_def, "description", "summary", "title")
+        adapter = self._adapter
+
+        async def handler(message: str) -> dict[str, Any]:
+            from fastmcp.server.dependencies import get_context
+            ctx = get_context()
+            bridge_ctx = BridgeContext.from_fastmcp_context(ctx)
+            response = await adapter.send_message(agent_name, message, bridge_ctx)
+            return {
+                "agent": agent_name,
+                "text": response.text,
+                "events": [e.to_dict() for e in response.events],
+            }
+
+        handler.__name__ = tool_name
+        handler.__doc__ = desc or f"Send a message via '{agent_name}' (tool: {tool_name})."
+        return FunctionTool.from_function(
+            handler, name=tool_name, description=desc
+        )
 
     def _make_proxy_tool(
         self, agent_name: str, tool_def: dict[str, Any],

@@ -65,6 +65,17 @@ from .bridge.middleware import (
     LoggingMiddleware,
     MiddlewareChain,
 )
+from .bridge.output_models import (
+    AgentInspectOutput,
+    AgentListOutput,
+    AgentMessageOutput,
+    AgentSummary,
+    ErrorOutput,
+    SubAgentSummary,
+    TaskListOutput,
+    TaskStatusOutput,
+    TaskSummary,
+)
 from .bridge.provider import AgentProvider
 from .bridge.router import AgentRouter
 from .bridge.storage import InMemoryTaskStore, TaskStore
@@ -86,6 +97,14 @@ def create_server(
     transforms: list[Any] | None = None,
     namespace: str | None = None,
     visibility: Any | None = None,
+    tool_mapper: Any | None = None,
+    resources_as_tools: bool = False,
+    prompts_as_tools: bool = False,
+    extra_providers: list[Any] | None = None,
+    session_state_store: Any | None = None,
+    sampling_handler: Any | None = None,
+    sampling_handler_behavior: str = "fallback",
+    health_check_interval: float | None = None,
 ) -> FastMCP:
     """Create a FastMCP server bridging MCP clients to agent backends.
 
@@ -104,6 +123,56 @@ def create_server(
             its tenant policy middleware is registered and
             ``apply_session_policy()`` is called at the start of each
             ``agent`` tool invocation.
+        tool_mapper: Optional ``ToolMapper`` instance controlling how agent
+            capabilities are mapped to MCP tool definitions. When ``None``,
+            the default behaviour (one tool per agent) is used.
+        resources_as_tools: When ``True``, adds a ``ResourcesAsTools``
+            transform so clients that only support tools can still access
+            all MCP resources (including artifact resources) via tool calls.
+        prompts_as_tools: When ``True``, adds a ``PromptsAsTools`` transform
+            so registered agent prompts are callable as tools.
+        extra_providers: Optional list of additional FastMCP ``Provider``
+            instances to compose alongside ``AgentProvider``. Use this to
+            combine the A2A agent bridge with, for example, an
+            ``OpenAPIProvider`` or a custom ``FileSystemProvider``::
+
+                from fastmcp.server.openapi import OpenAPIProvider
+
+                server = create_server(
+                    agents=agents,
+                    extra_providers=[OpenAPIProvider(spec_url="https://…")],
+                )
+
+        session_state_store: Pluggable ``AsyncKeyValue`` backend for FastMCP
+            session state (``ctx.get_state``/``ctx.set_state``).  Defaults to
+            an in-process ``MemoryStore``.  Pass a Redis or DynamoDB store to
+            enable persistent, horizontally-scalable session state::
+
+                from key_value.aio.stores.redis import RedisStore
+                store = RedisStore(url="redis://localhost:6379")
+                server = create_server(agents=agents, session_state_store=store)
+
+        sampling_handler: Optional FastMCP sampling handler used when the
+            connected MCP client does not support sampling
+            (``sampling_handler_behavior="fallback"``, the default).  Pass an
+            ``AnthropicSamplingHandler`` or ``OpenAISamplingHandler`` instance
+            to ensure ``LLMRouter.aselect()`` always has access to an LLM::
+
+                from fastmcp.client.sampling.handlers.anthropic import (
+                    AnthropicSamplingHandler,
+                )
+                handler = AnthropicSamplingHandler(
+                    default_model="claude-sonnet-4-6"
+                )
+                server = create_server(agents=agents, sampling_handler=handler)
+
+        sampling_handler_behavior: Controls when *sampling_handler* is used.
+            ``"fallback"`` (default) — use the handler only when the client
+            doesn't support sampling.  ``"always"`` — bypass the client
+            entirely and always use the handler.
+        health_check_interval: When set, starts a background health-check
+            loop via the composed lifespan, calling ``adapter.health_check()``
+            every *health_check_interval* seconds.
 
     Returns:
         A fully configured ``FastMCP`` server instance.
@@ -117,9 +186,9 @@ def create_server(
     agent_list = router.list_agents()
 
     # Build adapter
+    pool: A2AClientPool | None = None
     if adapter is None:
         agent_map = {a.name: a for a in agent_list}
-        pool: A2AClientPool | None = None
         if client_factory is not None:
             pool = _wrap_legacy_factory(client_factory)
         else:
@@ -133,6 +202,7 @@ def create_server(
         card_parser=card_parser,
         cache_ttl=config.cache_ttl,
         prefetch_cards=config.prefetch_cards,
+        tool_mapper=tool_mapper,
     )
 
     # Build bridge middleware chain
@@ -159,8 +229,33 @@ def create_server(
         context_manager=context_mgr,
     )
 
-    # Build server
-    mcp = FastMCP(config.name, providers=[provider])
+    # Build server — compose AgentProvider with any extra providers
+    all_providers: list[Any] = [provider]
+    if extra_providers:
+        all_providers.extend(extra_providers)
+
+    # Build composed lifespan for resource management and cleanup
+    from .bridge.lifespans import compose_lifespans, make_cleanup_lifespan
+    from .bridge.dependencies import clear as _clear_deps
+
+    cleanup_ls = make_cleanup_lifespan(pool, clear_deps_fn=_clear_deps)
+    health_ls = None
+    if health_check_interval is not None:
+        from .bridge.lifespans import make_health_monitor_lifespan
+        health_ls = make_health_monitor_lifespan(adapter, interval=health_check_interval)
+    server_lifespan = compose_lifespans(cleanup_ls, health_ls)
+
+    # Build server kwargs — pass optional FastMCP parameters only when set
+    _server_kwargs: dict[str, Any] = {"providers": all_providers}
+    if server_lifespan is not None:
+        _server_kwargs["lifespan"] = server_lifespan
+    if session_state_store is not None:
+        _server_kwargs["session_state_store"] = session_state_store
+    if sampling_handler is not None:
+        _server_kwargs["sampling_handler"] = sampling_handler
+        _server_kwargs["sampling_handler_behavior"] = sampling_handler_behavior
+
+    mcp = FastMCP(config.name, **_server_kwargs)
 
     # Add FastMCP-level middleware
     mcp.add_middleware(AgentiqueMiddleware(emitter=emitter))
@@ -181,9 +276,39 @@ def create_server(
         for transform in transforms:
             mcp.add_transform(transform)
 
+    # Server-bound transforms (require the server instance to be built first)
+    if resources_as_tools:
+        try:
+            from fastmcp.server.transforms import ResourcesAsTools
+            mcp.add_transform(ResourcesAsTools(mcp))
+        except Exception:
+            logger.warning("ResourcesAsTools transform not available in this FastMCP version")
+
+    if prompts_as_tools:
+        try:
+            from fastmcp.server.transforms import PromptsAsTools
+            mcp.add_transform(PromptsAsTools(mcp))
+        except Exception:
+            logger.warning("PromptsAsTools transform not available in this FastMCP version")
+
     # ---- Core tools (using Depends() for dependency injection) ----
 
-    @mcp.tool(name="agent")
+    # Compute TaskConfig for the main agent tool: use "optional" mode when
+    # background tasks are enabled AND pydocket (fastmcp[tasks]) is installed.
+    _agent_task_config: Any = False
+    if config.enable_background_tasks:
+        try:
+            from fastmcp.server.tasks.config import TaskConfig as _AgentTC
+            try:
+                import docket as _docket_check  # noqa: F401
+                _agent_task_config = _AgentTC(mode="optional")
+            except ImportError:
+                pass
+        except ImportError:
+            pass
+
+    @mcp.tool(name="agent", task=_agent_task_config,
+              output_schema=AgentMessageOutput.json_schema())
     async def agent_tool(
         message: str,
         target: str | None = None,
@@ -195,8 +320,11 @@ def create_server(
         _config: AgentiqueConfig = Depends(get_config),
         _emitter: AsyncEventEmitter = Depends(get_emitter),
         _ctx_mgr: ContextManager = Depends(get_context_manager),
-    ) -> str:
+    ) -> ToolResult:
         """Send a message to an A2A agent and stream the response.
+
+        Returns a structured payload including the task ID, resolved agent
+        name, terminal task state, artifact URIs, and the response text.
 
         Args:
             message: The message to send to the agent
@@ -204,6 +332,7 @@ def create_server(
             context_id: Optional context ID for conversation continuity
         """
         task_id = str(uuid4())
+        resolved: Any = None
 
         # Auto-apply tenant visibility policy at session initialisation
         if visibility is not None:
@@ -222,8 +351,9 @@ def create_server(
             session_id=session_id,
             context_id=context_id,
             task_id=task_id,
+            ctx=ctx,
         )
-        await _ctx_mgr.track_task(effective_ctx_id, task_id)
+        await _ctx_mgr.track_task(effective_ctx_id, task_id, ctx=ctx)
 
         tracker = await _tasks.create(task_id, effective_ctx_id)
         hierarchy = AgentHierarchy(root=target or "auto")
@@ -306,12 +436,36 @@ def create_server(
                     except Exception as elicit_exc:
                         logger.warning("Elicitation failed: %s", elicit_exc)
 
-                # Handle auth-required state
+                # Handle auth-required state via elicitation
                 if chunk.state == "auth-required":
-                    await ctx.warning(
-                        "Agent requires authentication. "
-                        "Provide credentials via context metadata."
+                    auth_prompt = (
+                        chunk.text
+                        or "The agent requires authentication. "
+                           "Please provide your credentials."
                     )
+                    try:
+                        elicit_result = await ctx.elicit(
+                            auth_prompt,
+                            response_type=None,
+                        )
+                        if hasattr(elicit_result, "data") and elicit_result.data:
+                            credentials = str(elicit_result.data)
+                            bridge_ctx = bridge_ctx.replace(
+                                meta={
+                                    **(bridge_ctx.meta or {}),
+                                    "credentials": credentials,
+                                }
+                            )
+                    except Exception as auth_exc:
+                        logger.warning(
+                            "Auth elicitation failed (%s); "
+                            "continuing without credentials",
+                            auth_exc,
+                        )
+                        await ctx.warning(
+                            "Agent requires authentication. "
+                            "Provide credentials via context metadata."
+                        )
 
                 # Capture artifacts as MCP Resources
                 if chunk.kind == "artifact" and chunk.text:
@@ -347,20 +501,52 @@ def create_server(
 
             await _emitter.emit("task.completed", task_id=task_id)
 
-        return "".join(text_parts)
+        response_text = "".join(text_parts)
+        artifact_uris = [
+            f"a2a://{task_id}/artifacts/{a['artifact_id']}"
+            for a in _tasks.list_artifacts(task_id)
+        ]
+        agent_name = resolved.name if resolved is not None else (target or "unknown")
+        sc = AgentMessageOutput(
+            agent=agent_name,
+            task_id=task_id,
+            context_id=effective_ctx_id,
+            state=tracker.state.value,
+            response=response_text,
+            artifact_uris=artifact_uris,
+            event_count=len(tracker.events),
+            has_artifacts=bool(artifact_uris),
+            mcp_related_task=task_id,
+        ).model_dump()
+        return ToolResult(
+            content=response_text,
+            structured_content=sc,
+        )
 
-    @mcp.tool(name="agents")
+    @mcp.tool(name="agents", output_schema=AgentListOutput.json_schema())
     def agents_tool(
         _router: AgentRouter = Depends(get_router),
     ) -> ToolResult:
         """List available A2A agents and their capabilities."""
-        agents_data = [a.to_dict() for a in _router.list_agents()]
+        agent_list = _router.list_agents()
+        sc = AgentListOutput(
+            agents=[
+                AgentSummary(
+                    name=a.name,
+                    base_url=a.base_url,
+                    description=a.description,
+                    skills=list(a.skills),
+                )
+                for a in agent_list
+            ],
+            count=len(agent_list),
+        ).model_dump()
         return ToolResult(
-            content=json.dumps(agents_data, indent=2),
-            structured_content={"agents": agents_data},
+            content=json.dumps(sc, indent=2),
+            structured_content=sc,
         )
 
-    @mcp.tool(name="task")
+    @mcp.tool(name="task", output_schema=TaskStatusOutput.json_schema())
     async def task_tool(
         id: str,
         ctx: Context = CurrentContext(),
@@ -372,19 +558,27 @@ def create_server(
             id: The task ID to query
         """
         tracker = await _tasks.get_or_none(id)
-        if tracker:
-            data = tracker.to_dict()
+        if tracker is not None:
+            sc = TaskStatusOutput(
+                task_id=id,
+                context_id=tracker.context_id,
+                state=tracker.state.value,
+                progress=tracker.progress,
+                message=tracker.message,
+                event_count=len(tracker.events),
+                artifact_count=len(_tasks.list_artifacts(id)),
+            ).model_dump()
             return ToolResult(
-                content=json.dumps(data, indent=2),
-                structured_content=data,
+                content=json.dumps(sc, indent=2),
+                structured_content=sc,
             )
-        error_data = {"error": f"Task {id} not found", "task_id": id}
+        sc = ErrorOutput(error=f"Task {id} not found", code="TASK_NOT_FOUND").model_dump()
         return ToolResult(
-            content=json.dumps(error_data),
-            structured_content=error_data,
+            content=json.dumps(sc),
+            structured_content=sc,
         )
 
-    @mcp.tool(name="inspect")
+    @mcp.tool(name="inspect", output_schema=AgentInspectOutput.json_schema())
     async def inspect_tool(
         name: str,
         ctx: Context = CurrentContext(),
@@ -397,23 +591,37 @@ def create_server(
         try:
             card = await provider.get_agent_card(name)
             if not card:
-                error_data = {"error": f"Agent '{name}' not found", "agent": name}
+                sc = ErrorOutput(
+                    error=f"Agent '{name}' not found", code="AGENT_NOT_FOUND",
+                ).model_dump()
                 return ToolResult(
-                    content=json.dumps(error_data),
-                    structured_content=error_data,
+                    content=json.dumps(sc),
+                    structured_content=sc,
                 )
             hierarchy = card_parser.build_hierarchy(name, card)
-            data = hierarchy.to_dict()
+            sc = AgentInspectOutput(
+                root=hierarchy.root,
+                agents={
+                    k: SubAgentSummary(
+                        name=v.name,
+                        description=v.description,
+                        skills=v.skills,
+                        parent=v.parent,
+                        depth=v.depth,
+                    )
+                    for k, v in hierarchy.agents.items()
+                },
+            ).model_dump()
             return ToolResult(
-                content=json.dumps(data, indent=2),
-                structured_content=data,
+                content=json.dumps(sc, indent=2),
+                structured_content=sc,
             )
         except Exception as exc:
             await ctx.error(f"Failed to inspect agent: {exc}")
-            error_data = {"error": str(exc), "agent": name}
+            sc = ErrorOutput(error=str(exc), code="INSPECT_ERROR").model_dump()
             return ToolResult(
-                content=json.dumps(error_data),
-                structured_content=error_data,
+                content=json.dumps(sc),
+                structured_content=sc,
             )
 
     # ---- Background task support with TaskConfig ----
@@ -563,6 +771,59 @@ def create_server(
             {"agents": [a.to_dict() for a in router.list_agents()]},
             indent=2,
         )
+
+    # ---- Capability advertisement resource ----
+
+    @mcp.resource("a2a://capabilities")
+    def capabilities_resource() -> str:
+        """Gateway capability advertisement.
+
+        Describes supported A2A extensions, transports, and feature flags.
+        Since FastMCP 3.0 does not yet support ``capabilities.extensions``
+        negotiation, this resource is the canonical way for MCP clients to
+        discover what this gateway supports.
+        """
+        import agentique
+        from .extensions import ALL_EXTENSION_URIS
+
+        data: dict[str, Any] = {
+            "gateway": config.name,
+            "version": getattr(agentique, "__version__", "0.4.0"),
+            "extensions": ALL_EXTENSION_URIS,
+            "supported_transports": config.supported_transports or ["JSONRPC"],
+            "features": {
+                "background_tasks": config.enable_background_tasks,
+                "elicitation": config.enable_elicitation,
+                "tool_confirmation": config.enable_tool_confirmation,
+                "push_notifications": True,
+            },
+            "session_state_persistent": session_state_store is not None,
+        }
+        return json.dumps(data, indent=2)
+
+    # ---- Task catalog resource ----
+
+    @mcp.resource("a2a://tasks")
+    async def tasks_catalog() -> str:
+        """List all tasks tracked in this gateway session.
+
+        Returns a ``TaskListOutput`` JSON document with one ``TaskSummary``
+        per tracked A2A task. Use the ``task`` tool for individual task details.
+        """
+        ids = await tasks.list_tasks()
+        summaries: list[TaskSummary] = []
+        for tid in ids:
+            t = await tasks.get_or_none(tid)
+            if t is not None:
+                summaries.append(TaskSummary(
+                    task_id=tid,
+                    context_id=t.context_id,
+                    state=t.state.value,
+                    event_count=len(t.events),
+                    artifact_count=len(tasks.list_artifacts(tid)),
+                ))
+        output = TaskListOutput(tasks=summaries, count=len(summaries))
+        return output.model_dump_json(indent=2)
 
     # ---- Artifact resources ----
 

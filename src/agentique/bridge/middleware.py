@@ -124,8 +124,10 @@ class ErrorMappingMiddleware:
     # A2A JSON-RPC error codes → agentique error types
     A2A_ERROR_MAP: dict[int, str] = {
         -32001: "TaskNotFoundError",
-        -32002: "TranslationError",      # ContentTypeNotSupported
-        -32003: "AgentUnavailableError",  # UnsupportedOperation
+        -32002: "ContentTypeNotSupportedError",
+        -32003: "UnsupportedOperationError",
+        -32004: "TaskNotCancelableError",
+        -32005: "PushNotificationNotSupportedError",
     }
 
     async def process(
@@ -146,8 +148,11 @@ class ErrorMappingMiddleware:
             AdapterError,
             AgentNotFoundError,
             AgentUnavailableError,
+            ContentTypeNotSupportedError,
+            PushNotificationNotSupportedError,
+            TaskNotCancelableError,
             TaskNotFoundError,
-            TranslationError,
+            UnsupportedOperationError,
         )
 
         # Check for A2A SDK error codes
@@ -156,8 +161,10 @@ class ErrorMappingMiddleware:
             error_name = self.A2A_ERROR_MAP[error_code]
             error_cls = {
                 "TaskNotFoundError": TaskNotFoundError,
-                "TranslationError": TranslationError,
-                "AgentUnavailableError": AgentUnavailableError,
+                "ContentTypeNotSupportedError": ContentTypeNotSupportedError,
+                "UnsupportedOperationError": UnsupportedOperationError,
+                "TaskNotCancelableError": TaskNotCancelableError,
+                "PushNotificationNotSupportedError": PushNotificationNotSupportedError,
             }.get(error_name, AdapterError)
             return error_cls(str(exc))
 
