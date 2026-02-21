@@ -179,7 +179,7 @@ def test_capabilities_resource_returns_valid_json():
 
 
 def test_capabilities_resource_lists_extension_uris():
-    """JSON contains all 4 Agentique extension URIs."""
+    """JSON contains all Agentique extension URIs (routing, session, trace)."""
     import asyncio
     import json
     from agentique.server import create_server
@@ -197,6 +197,8 @@ def test_capabilities_resource_lists_extension_uris():
     assert "extensions" in data
     for uri in ALL_EXTENSION_URIS:
         assert uri in data["extensions"], f"{uri} missing from extensions"
+    # Policy context URI was removed
+    assert "com.agentique/policy-context" not in data["extensions"]
 
 
 def test_capabilities_resource_includes_gateway_name():
@@ -294,3 +296,46 @@ def test_capabilities_resource_supported_transports_default():
 
     assert "supported_transports" in data
     assert "JSONRPC" in data["supported_transports"]
+
+
+# ---------------------------------------------------------------------------
+# max_response_size parameter (Focus #8d)
+# ---------------------------------------------------------------------------
+
+
+def test_create_server_accepts_max_response_size_none():
+    """max_response_size=None (default) creates server without error."""
+    from agentique.server import create_server
+    server = create_server(agents=[make_agent()], max_response_size=None)
+    assert server is not None
+
+
+def test_create_server_accepts_max_response_size_value():
+    """max_response_size set to a byte limit creates server without error."""
+    from agentique.server import create_server
+    server = create_server(agents=[make_agent()], max_response_size=500_000)
+    assert server is not None
+
+
+def test_create_server_max_response_size_adds_middleware():
+    """When max_response_size is set, ResponseLimitingMiddleware is attempted if available."""
+    from agentique.server import create_server
+    from unittest.mock import patch, MagicMock
+    import sys
+
+    mock_middleware_cls = MagicMock()
+    mock_middleware_instance = MagicMock()
+    mock_middleware_cls.return_value = mock_middleware_instance
+
+    # Create a mock module for the middleware import path
+    mock_module = MagicMock()
+    mock_module.ResponseLimitingMiddleware = mock_middleware_cls
+
+    # Patch the entire module into sys.modules so the import inside server.py succeeds
+    with patch.dict(
+        sys.modules,
+        {"fastmcp.server.middleware.response_limiting": mock_module},
+    ):
+        server = create_server(agents=[make_agent()], max_response_size=100_000)
+        assert server is not None
+        mock_middleware_cls.assert_called_once_with(100_000)

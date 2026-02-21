@@ -219,6 +219,58 @@ class A2AAgentAdapter:
             result.append(entry)
         return result
 
+    async def cancel_task(self, agent_id: str, task_id: str) -> bool:
+        """Send a ``tasks/cancel`` request to the A2A agent.
+
+        Args:
+            agent_id: The agent that owns the task.
+            task_id: The task ID to cancel.
+
+        Returns:
+            ``True`` when the cancellation request was sent successfully.
+
+        Raises:
+            TaskNotCancelableError: When the A2A agent returns error -32004
+                (task cannot be cancelled in its current state).
+            UnsupportedOperationError: When the A2A client does not expose
+                a cancellation method.
+            AdapterError: On unexpected A2A communication failures.
+        """
+        from agentique.core.errors import (
+            AdapterError,
+            TaskNotCancelableError,
+            UnsupportedOperationError,
+        )
+
+        info = self._require_agent(agent_id)
+        client = await self._pool.get(info.base_url)
+
+        cancel_fn = getattr(client, "cancel_task", None)
+        if not callable(cancel_fn):
+            raise UnsupportedOperationError(
+                f"A2A client for agent '{agent_id}' does not support task cancellation"
+            )
+
+        try:
+            params = TaskIdParams(id=task_id)
+            result = cancel_fn(params)
+            if inspect.isawaitable(result):
+                result = await result
+            logger.info("Cancel request sent for task %s on agent %s", task_id, agent_id)
+            return True
+
+        except Exception as exc:
+            # Map A2A error code -32004 to TaskNotCancelableError
+            code = getattr(exc, "code", None) or getattr(exc, "error_code", None)
+            msg = str(exc)
+            if code == -32004 or "TaskNotCancelable" in type(exc).__name__ or "-32004" in msg:
+                raise TaskNotCancelableError(
+                    f"Task '{task_id}' cannot be cancelled: {exc}"
+                ) from exc
+            raise AdapterError(
+                f"Failed to cancel task '{task_id}' on agent '{agent_id}': {exc}"
+            ) from exc
+
     async def close(self) -> None:
         await self._pool.close()
 
@@ -346,6 +398,16 @@ class A2AAgentAdapter:
         metadata: dict[str, Any] = {"mcp": context.to_metadata()}
         if context.conversation_history:
             metadata["conversation_history"] = context.conversation_history
+
+        # Inject W3C trace context for end-to-end distributed tracing
+        from agentique.extensions import (
+            TRACE_CONTEXT_URI,
+            current_trace_context,
+            pack_trace_context,
+        )
+        trace_ctx = current_trace_context()
+        if trace_ctx:
+            metadata[TRACE_CONTEXT_URI] = pack_trace_context(**trace_ctx)
 
         # Attach extensions to the message
         update_fields: dict[str, Any] = {"metadata": metadata}

@@ -1,4 +1,4 @@
-"""Pluggable storage backends for task persistence.
+"""Pluggable storage backends for task and conversation persistence.
 
 Provides a ``TaskStore`` protocol and an in-memory default implementation.
 Production deployments can swap in Redis, DynamoDB, or filesystem backends
@@ -25,6 +25,12 @@ class TaskStore(Protocol):
     """Protocol for task persistence backends.
 
     Any class implementing these async methods is a valid store.
+
+    Task CRUD methods (required):
+        save, load, delete, list_ids
+
+    Conversation persistence methods (required):
+        save_conversation, load_conversation
     """
 
     async def save(self, task_id: str, tracker: TaskTracker) -> None:
@@ -43,15 +49,45 @@ class TaskStore(Protocol):
         """Return all stored task IDs."""
         ...
 
+    async def save_conversation(
+        self,
+        context_id: str,
+        turns: list[dict[str, str]],
+    ) -> None:
+        """Persist the conversation history for a context ID.
+
+        Args:
+            context_id: The A2A context ID for this conversation.
+            turns: Complete list of conversation turns (replaces any existing).
+                Each turn is a dict with ``role`` and ``content`` keys.
+        """
+        ...
+
+    async def load_conversation(
+        self,
+        context_id: str,
+    ) -> list[dict[str, str]]:
+        """Load conversation history for a context ID.
+
+        Args:
+            context_id: The A2A context ID to retrieve history for.
+
+        Returns:
+            List of conversation turns, or empty list if none stored.
+        """
+        ...
+
 
 class InMemoryTaskStore:
     """Default in-memory task store.
 
     Suitable for development and testing. Not persistent across restarts.
+    Implements both task CRUD and conversation history storage.
     """
 
     def __init__(self) -> None:
         self._tasks: dict[str, TaskTracker] = {}
+        self._conversations: dict[str, list[dict[str, str]]] = {}
         self._lock = asyncio.Lock()
 
     async def save(self, task_id: str, tracker: TaskTracker) -> None:
@@ -69,3 +105,18 @@ class InMemoryTaskStore:
     async def list_ids(self) -> list[str]:
         async with self._lock:
             return list(self._tasks.keys())
+
+    async def save_conversation(
+        self,
+        context_id: str,
+        turns: list[dict[str, str]],
+    ) -> None:
+        async with self._lock:
+            self._conversations[context_id] = list(turns)
+
+    async def load_conversation(
+        self,
+        context_id: str,
+    ) -> list[dict[str, str]]:
+        async with self._lock:
+            return list(self._conversations.get(context_id, []))

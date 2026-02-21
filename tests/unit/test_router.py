@@ -64,7 +64,6 @@ def make_decision(**kwargs: Any) -> RoutingDecision:
         confidence=0.9,
         reasoning="Best match for the task",
         fallback_agents=[],
-        requires_decomposition=False,
     )
     defaults.update(kwargs)
     return RoutingDecision(**defaults)
@@ -103,12 +102,10 @@ class TestRoutingDecision:
             confidence=0.85,
             reasoning="Strong skill match",
             fallback_agents=["beta", "gamma"],
-            requires_decomposition=False,
         )
         assert d.agent_id == "alpha"
         assert d.confidence == 0.85
         assert d.fallback_agents == ["beta", "gamma"]
-        assert d.requires_decomposition is False
 
     def test_defaults(self):
         d = RoutingDecision(
@@ -117,7 +114,6 @@ class TestRoutingDecision:
             reasoning="ok",
         )
         assert d.fallback_agents == []
-        assert d.requires_decomposition is False
 
     def test_confidence_at_bounds(self):
         assert RoutingDecision(agent_id="x", confidence=0.0, reasoning="r").confidence == 0.0
@@ -138,15 +134,6 @@ class TestRoutingDecision:
     def test_missing_reasoning_rejected(self):
         with pytest.raises(ValidationError):
             RoutingDecision(agent_id="x", confidence=0.9)  # type: ignore[call-arg]
-
-    def test_requires_decomposition_true(self):
-        d = RoutingDecision(
-            agent_id="x",
-            confidence=0.4,
-            reasoning="spans two domains",
-            requires_decomposition=True,
-        )
-        assert d.requires_decomposition is True
 
 
 # ---------------------------------------------------------------------------
@@ -258,18 +245,6 @@ class TestLLMRouterAselect:
         with caplog.at_level(logging.WARNING, logger="agentique.bridge.router"):
             await router.aselect("msg", [ALPHA, BETA], ctx=ctx)
         assert any("low-confidence" in r.message for r in caplog.records)
-
-    @pytest.mark.anyio
-    async def test_requires_decomposition_logs_info(self, router, caplog):
-        decision = make_decision(
-            agent_id="alpha",
-            confidence=0.7,
-            requires_decomposition=True,
-        )
-        ctx = make_ctx(decision=decision)
-        with caplog.at_level(logging.INFO, logger="agentique.bridge.router"):
-            await router.aselect("msg", [ALPHA, BETA], ctx=ctx)
-        assert any("decomposition" in r.message for r in caplog.records)
 
     @pytest.mark.anyio
     async def test_fallback_use_logged_at_info(self, router, caplog):

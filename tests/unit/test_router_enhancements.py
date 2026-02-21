@@ -47,7 +47,6 @@ def make_decision(agent_id: str) -> RoutingDecision:
         confidence=0.9,
         reasoning="test",
         fallback_agents=[],
-        requires_decomposition=False,
     )
 
 

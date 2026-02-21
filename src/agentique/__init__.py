@@ -94,6 +94,7 @@ from .bridge.dependencies import (
 from .bridge.fastmcp_middleware import AgentiqueMiddleware
 from .bridge.lifespans import (
     compose_lifespans,
+    make_artifact_cleanup_lifespan,
     make_cleanup_lifespan,
     make_health_monitor_lifespan,
 )
@@ -121,17 +122,14 @@ from .bridge.webhook import PushNotification, WebhookReceiver
 from .extensions import (
     ALL_EXTENSION_URIS,
     MCP_SESSION_URI,
-    POLICY_CONTEXT_URI,
     ROUTING_METADATA_URI,
     TRACE_CONTEXT_URI,
     build_gateway_metadata,
     current_trace_context,
     pack_mcp_session,
-    pack_policy_context,
     pack_routing_metadata,
     pack_trace_context,
     unpack_mcp_session,
-    unpack_policy_context,
     unpack_routing_metadata,
     unpack_trace_context,
 )
@@ -249,22 +247,20 @@ __all__ = [
     "WebhookReceiver",
     # Lifespans
     "compose_lifespans",
+    "make_artifact_cleanup_lifespan",
     "make_cleanup_lifespan",
     "make_health_monitor_lifespan",
     # Extensions
     "ALL_EXTENSION_URIS",
     "MCP_SESSION_URI",
-    "POLICY_CONTEXT_URI",
     "ROUTING_METADATA_URI",
     "TRACE_CONTEXT_URI",
     "build_gateway_metadata",
     "current_trace_context",
     "pack_mcp_session",
-    "pack_policy_context",
     "pack_routing_metadata",
     "pack_trace_context",
     "unpack_mcp_session",
-    "unpack_policy_context",
     "unpack_routing_metadata",
     "unpack_trace_context",
     # Errors (new)

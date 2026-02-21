@@ -106,6 +106,8 @@ def create_server(
     sampling_handler: Any | None = None,
     sampling_handler_behavior: str = "fallback",
     health_check_interval: float | None = None,
+    max_response_size: int | None = None,
+    artifact_ttl: float | None = None,
 ) -> FastMCP:
     """Create a FastMCP server bridging MCP clients to agent backends.
 
@@ -174,6 +176,13 @@ def create_server(
         health_check_interval: When set, starts a background health-check
             loop via the composed lifespan, calling ``adapter.health_check()``
             every *health_check_interval* seconds.
+        max_response_size: When set, adds a ``ResponseLimitingMiddleware``
+            that truncates tool response bodies exceeding this byte limit.
+            Prevents large A2A agent responses from overwhelming MCP client
+            context windows. ``None`` (default) means unlimited.
+        artifact_ttl: When set, artifacts older than this many seconds are
+            eligible for eviction via a background cleanup lifespan task.
+            ``None`` (default) keeps artifacts indefinitely.
 
     Returns:
         A fully configured ``FastMCP`` server instance.
@@ -217,8 +226,11 @@ def create_server(
     # Build context manager
     context_mgr = ContextManager()
 
-    # Task manager with pluggable storage
-    tasks = TaskManager(store=task_store or InMemoryTaskStore())
+    # Task manager with pluggable storage and optional artifact TTL
+    tasks = TaskManager(
+        store=task_store or InMemoryTaskStore(),
+        artifact_ttl=artifact_ttl,
+    )
 
     # Populate the dependency registry for Depends()-based injection
     configure_deps(
@@ -244,7 +256,11 @@ def create_server(
     if health_check_interval is not None:
         from .bridge.lifespans import make_health_monitor_lifespan
         health_ls = make_health_monitor_lifespan(adapter, interval=health_check_interval)
-    server_lifespan = compose_lifespans(cleanup_ls, health_ls)
+    artifact_cleanup_ls = None
+    if artifact_ttl is not None:
+        from .bridge.lifespans import make_artifact_cleanup_lifespan
+        artifact_cleanup_ls = make_artifact_cleanup_lifespan(tasks, ttl=artifact_ttl)
+    server_lifespan = compose_lifespans(cleanup_ls, health_ls, artifact_cleanup_ls)
 
     # Build server kwargs — pass optional FastMCP parameters only when set
     _server_kwargs: dict[str, Any] = {"providers": all_providers}
@@ -260,6 +276,20 @@ def create_server(
 
     # Add FastMCP-level middleware
     mcp.add_middleware(AgentiqueMiddleware(emitter=emitter))
+
+    # Add response size limiting middleware when requested
+    if max_response_size is not None:
+        try:
+            from fastmcp.server.middleware.response_limiting import (
+                ResponseLimitingMiddleware,
+            )
+            mcp.add_middleware(ResponseLimitingMiddleware(max_response_size))
+        except ImportError:
+            logger.warning(
+                "ResponseLimitingMiddleware not available in this FastMCP version; "
+                "max_response_size=%d will be ignored",
+                max_response_size,
+            )
 
     # Register tenant visibility middleware when a policy is configured
     if visibility is not None:
@@ -359,10 +389,10 @@ def create_server(
         tracker = await _tasks.create(task_id, effective_ctx_id)
         hierarchy = AgentHierarchy(root=target or "auto")
 
-        # Conversation history
+        # Conversation history (use async path to read from store)
         metadata: dict[str, Any] = {}
         if context_id:
-            history = _tasks.get_conversation_history(context_id)
+            history = await _tasks.aget_conversation_history(context_id)
             if history:
                 metadata["conversation_history"] = history
 
@@ -378,6 +408,9 @@ def create_server(
             resolved = await _router.aresolve(
                 name=target, message=message, ctx=ctx,
             )
+
+            # Record which agent this task was sent to (enables cancel_task lookup)
+            tracker.agent_name = resolved.name
 
             # OpenTelemetry tracing
             set_span_attribute("agentique.agent_name", resolved.name)
@@ -499,13 +532,13 @@ def create_server(
 
             set_span_attribute("agentique.task_state", tracker.state.value)
 
-            # Persist conversation
+            # Persist conversation to store (async path)
             all_text = " ".join(
                 e.text for e in tracker.events
                 if e.text and e.kind in {"message", "artifact"}
             ).strip()
             if all_text and effective_ctx_id:
-                _tasks.append_conversation(effective_ctx_id, message, all_text)
+                await _tasks.aappend_conversation(effective_ctx_id, message, all_text)
 
             if hierarchy.agents:
                 await _tasks.set_hierarchy(task_id, hierarchy)
@@ -588,6 +621,71 @@ def create_server(
             content=json.dumps(sc),
             structured_content=sc,
         )
+
+    @mcp.tool(name="cancel_task", output_schema=TaskStatusOutput.json_schema())
+    async def cancel_task_tool(
+        task_id: str,
+        ctx: Context = CurrentContext(),
+        _tasks: TaskManager = Depends(get_task_manager),
+        _adapter: Any = Depends(get_adapter),
+    ) -> ToolResult:
+        """Cancel a running A2A task.
+
+        Sends a ``tasks/cancel`` request to the agent and transitions the
+        task state to ``canceled``. The task must be in a non-terminal state
+        and the agent must support cancellation.
+
+        Args:
+            task_id: The task ID to cancel (returned by the ``agent`` tool).
+        """
+        from .core.errors import TaskNotCancelableError, UnsupportedOperationError
+
+        tracker = await _tasks.get_or_none(task_id)
+        if tracker is None:
+            sc = ErrorOutput(
+                error=f"Task {task_id!r} not found", code="TASK_NOT_FOUND",
+            ).model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+
+        if tracker.state.is_terminal:
+            sc = ErrorOutput(
+                error=f"Task {task_id!r} is already in terminal state {tracker.state.value!r}",
+                code="TASK_ALREADY_TERMINAL",
+            ).model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+
+        agent_name = tracker.agent_name
+        if not agent_name:
+            sc = ErrorOutput(
+                error=f"Task {task_id!r} has no associated agent; cannot cancel",
+                code="AGENT_UNKNOWN",
+            ).model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+
+        try:
+            await _adapter.cancel_task(agent_name, task_id)
+        except TaskNotCancelableError as exc:
+            sc = ErrorOutput(error=str(exc), code="TASK_NOT_CANCELABLE").model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+        except UnsupportedOperationError as exc:
+            sc = ErrorOutput(error=str(exc), code="UNSUPPORTED").model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+        except Exception as exc:
+            await ctx.error(f"Cancel failed: {exc}")
+            sc = ErrorOutput(error=str(exc), code="CANCEL_ERROR").model_dump()
+            return ToolResult(content=json.dumps(sc), structured_content=sc)
+
+        tracker.transition(TaskState.canceled)
+        sc = TaskStatusOutput(
+            task_id=task_id,
+            context_id=tracker.context_id,
+            state=tracker.state.value,
+            progress=tracker.progress,
+            message=tracker.message,
+            event_count=len(tracker.events),
+            artifact_count=len(_tasks.list_artifacts(task_id)),
+        ).model_dump()
+        return ToolResult(content=json.dumps(sc, indent=2), structured_content=sc)
 
     @mcp.tool(name="inspect", output_schema=AgentInspectOutput.json_schema())
     async def inspect_tool(

@@ -1,9 +1,8 @@
 """Agentique gateway extension definitions for A2A and MCP metadata passthrough.
 
 Defines URI-keyed extension constants and helper functions that pack
-gateway-internal metadata (routing decisions, policy context, MCP session
-info, trace context) into A2A message ``metadata`` dicts and MCP tool
-``_meta`` fields.
+gateway-internal metadata (routing decisions, MCP session info, trace context)
+into A2A message ``metadata`` dicts and MCP tool ``_meta`` fields.
 
 Extension URIs follow the reversed-domain convention:
 ``com.agentique/<channel>``
@@ -24,7 +23,6 @@ Usage — attaching routing metadata to an A2A message::
         confidence=0.92,
         reasoning="billing skills match invoice request",
         fallback_agents=["crm"],
-        requires_decomposition=False,
     )
     metadata = {ROUTING_METADATA_URI: pack_routing_metadata(decision)}
     # Pass metadata to adapter.send_message(..., metadata=metadata)
@@ -55,11 +53,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: Carries routing decision metadata (agent_id, confidence, reasoning,
-#: fallback_agents, requires_decomposition).
+#: fallback_agents).
 ROUTING_METADATA_URI: str = "com.agentique/routing-metadata"
-
-#: Carries policy context (tenant_id, visibility_tier, rate_limit_budget).
-POLICY_CONTEXT_URI: str = "com.agentique/policy-context"
 
 #: Carries MCP session context (session_id, client_capabilities_hash).
 MCP_SESSION_URI: str = "com.agentique/mcp-session"
@@ -70,7 +65,6 @@ TRACE_CONTEXT_URI: str = "com.agentique/trace-context"
 #: Complete list of all Agentique extension URIs for capability negotiation.
 ALL_EXTENSION_URIS: list[str] = [
     ROUTING_METADATA_URI,
-    POLICY_CONTEXT_URI,
     MCP_SESSION_URI,
     TRACE_CONTEXT_URI,
 ]
@@ -87,7 +81,7 @@ def pack_routing_metadata(decision: Any) -> dict[str, Any]:
     Args:
         decision: A ``RoutingDecision`` instance (or any object with
             ``agent_id``, ``confidence``, ``reasoning``,
-            ``fallback_agents``, ``requires_decomposition`` attributes).
+            ``fallback_agents`` attributes).
 
     Returns:
         A plain dict suitable for use as A2A message metadata under
@@ -103,9 +97,6 @@ def pack_routing_metadata(decision: Any) -> dict[str, Any]:
     fallbacks = getattr(decision, "fallback_agents", None)
     if fallbacks:
         result["fallback_agents"] = list(fallbacks)
-    requires = getattr(decision, "requires_decomposition", False)
-    if requires:
-        result["requires_decomposition"] = True
     return result
 
 
@@ -127,57 +118,6 @@ def unpack_routing_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
         "confidence": float(payload.get("confidence", 0.0)),
         "reasoning": payload.get("reasoning", ""),
         "fallback_agents": list(payload.get("fallback_agents") or []),
-        "requires_decomposition": bool(payload.get("requires_decomposition", False)),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Policy context
-# ---------------------------------------------------------------------------
-
-
-def pack_policy_context(
-    *,
-    tenant_id: str | None = None,
-    visibility_tier: str | None = None,
-    rate_limit_budget: int | None = None,
-) -> dict[str, Any]:
-    """Pack tenant policy context into an A2A extension metadata dict.
-
-    Args:
-        tenant_id: The tenant identifier for multi-tenant deployments.
-        visibility_tier: The visibility tier (e.g. ``"tier_1"``, ``"internal"``).
-        rate_limit_budget: Remaining request budget for rate limiting.
-
-    Returns:
-        A plain dict suitable for ``POLICY_CONTEXT_URI`` in A2A metadata.
-    """
-    result: dict[str, Any] = {}
-    if tenant_id is not None:
-        result["tenant_id"] = tenant_id
-    if visibility_tier is not None:
-        result["visibility_tier"] = visibility_tier
-    if rate_limit_budget is not None:
-        result["rate_limit_budget"] = rate_limit_budget
-    return result
-
-
-def unpack_policy_context(metadata: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract policy context from an A2A metadata dict.
-
-    Args:
-        metadata: The full A2A message ``metadata`` dict.
-
-    Returns:
-        A plain dict with policy fields, or ``None`` if absent.
-    """
-    payload = metadata.get(POLICY_CONTEXT_URI)
-    if not isinstance(payload, dict):
-        return None
-    return {
-        "tenant_id": payload.get("tenant_id"),
-        "visibility_tier": payload.get("visibility_tier"),
-        "rate_limit_budget": payload.get("rate_limit_budget"),
     }
 
 
@@ -298,21 +238,17 @@ def unpack_trace_context(metadata: dict[str, Any]) -> dict[str, Any] | None:
 def build_gateway_metadata(
     *,
     routing_decision: Any | None = None,
-    tenant_id: str | None = None,
-    visibility_tier: str | None = None,
     session_id: str | None = None,
     context_id: str | None = None,
     include_trace: bool = True,
 ) -> dict[str, Any]:
     """Build a complete A2A ``metadata`` dict from all gateway extensions.
 
-    Convenience function that combines routing, policy, session, and trace
+    Convenience function that combines routing, session, and trace
     context into a single metadata dict for ``adapter.send_message()``.
 
     Args:
         routing_decision: Optional ``RoutingDecision`` instance.
-        tenant_id: Optional tenant identifier.
-        visibility_tier: Optional visibility tier string.
         session_id: Optional MCP session ID.
         context_id: Optional A2A context ID.
         include_trace: When ``True`` (default), injects the current OTel
@@ -327,12 +263,6 @@ def build_gateway_metadata(
         payload = pack_routing_metadata(routing_decision)
         if payload:
             metadata[ROUTING_METADATA_URI] = payload
-
-    policy = pack_policy_context(
-        tenant_id=tenant_id, visibility_tier=visibility_tier
-    )
-    if policy:
-        metadata[POLICY_CONTEXT_URI] = policy
 
     session = pack_mcp_session(session_id=session_id, context_id=context_id)
     if session:

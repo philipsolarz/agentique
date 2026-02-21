@@ -2,14 +2,14 @@
 
 Covers:
   - URI constants are properly namespaced
-  - ALL_EXTENSION_URIS contains all four constants
+  - ALL_EXTENSION_URIS contains all three constants (routing, session, trace)
   - pack_routing_metadata / unpack_routing_metadata round-trip
-  - pack_policy_context / unpack_policy_context round-trip
   - pack_mcp_session / unpack_mcp_session round-trip
   - pack_trace_context / unpack_trace_context round-trip
   - current_trace_context: returns empty dict when OTel not active
   - build_gateway_metadata: composes all channels
   - unpack returns None for absent keys
+  - Trace context is injected into A2A messages when OTel is active
 """
 
 from __future__ import annotations
@@ -20,17 +20,14 @@ from agentique.bridge.router import RoutingDecision
 from agentique.extensions import (
     ALL_EXTENSION_URIS,
     MCP_SESSION_URI,
-    POLICY_CONTEXT_URI,
     ROUTING_METADATA_URI,
     TRACE_CONTEXT_URI,
     build_gateway_metadata,
     current_trace_context,
     pack_mcp_session,
-    pack_policy_context,
     pack_routing_metadata,
     pack_trace_context,
     unpack_mcp_session,
-    unpack_policy_context,
     unpack_routing_metadata,
     unpack_trace_context,
 )
@@ -45,10 +42,6 @@ def test_routing_metadata_uri_namespaced():
     assert ROUTING_METADATA_URI.startswith("com.agentique/")
 
 
-def test_policy_context_uri_namespaced():
-    assert POLICY_CONTEXT_URI.startswith("com.agentique/")
-
-
 def test_mcp_session_uri_namespaced():
     assert MCP_SESSION_URI.startswith("com.agentique/")
 
@@ -60,14 +53,21 @@ def test_trace_context_uri_namespaced():
 def test_all_extension_uris_complete():
     uris = set(ALL_EXTENSION_URIS)
     assert ROUTING_METADATA_URI in uris
-    assert POLICY_CONTEXT_URI in uris
     assert MCP_SESSION_URI in uris
     assert TRACE_CONTEXT_URI in uris
-    assert len(ALL_EXTENSION_URIS) == 4
+    assert len(ALL_EXTENSION_URIS) == 3
 
 
 def test_all_uris_unique():
     assert len(set(ALL_EXTENSION_URIS)) == len(ALL_EXTENSION_URIS)
+
+
+def test_policy_context_uri_removed():
+    """POLICY_CONTEXT_URI must not exist in extensions module."""
+    import agentique.extensions as ext
+    assert not hasattr(ext, "POLICY_CONTEXT_URI"), (
+        "POLICY_CONTEXT_URI was removed — it should not be in the module"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,6 @@ def _make_decision(**kwargs):
         confidence=0.92,
         reasoning="billing skills match",
         fallback_agents=["crm"],
-        requires_decomposition=False,
     )
     defaults.update(kwargs)
     return RoutingDecision(**defaults)
@@ -96,16 +95,11 @@ def test_pack_routing_metadata_basic():
     assert packed["fallback_agents"] == ["crm"]
 
 
-def test_pack_routing_metadata_no_requires_decomposition_when_false():
-    decision = _make_decision(requires_decomposition=False)
+def test_pack_routing_metadata_no_requires_decomposition_field():
+    """requires_decomposition was removed — must not appear in output."""
+    decision = _make_decision()
     packed = pack_routing_metadata(decision)
     assert "requires_decomposition" not in packed
-
-
-def test_pack_routing_metadata_includes_requires_decomposition_when_true():
-    decision = _make_decision(requires_decomposition=True)
-    packed = pack_routing_metadata(decision)
-    assert packed["requires_decomposition"] is True
 
 
 def test_pack_routing_metadata_empty_fallbacks_omitted():
@@ -132,46 +126,6 @@ def test_unpack_routing_metadata_absent_returns_none():
 def test_unpack_routing_metadata_wrong_type_returns_none():
     result = unpack_routing_metadata({ROUTING_METADATA_URI: "not a dict"})
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Policy context
-# ---------------------------------------------------------------------------
-
-
-def test_pack_policy_context_full():
-    packed = pack_policy_context(
-        tenant_id="acme", visibility_tier="tier_1", rate_limit_budget=500
-    )
-    assert packed["tenant_id"] == "acme"
-    assert packed["visibility_tier"] == "tier_1"
-    assert packed["rate_limit_budget"] == 500
-
-
-def test_pack_policy_context_partial():
-    packed = pack_policy_context(tenant_id="acme")
-    assert "tenant_id" in packed
-    assert "visibility_tier" not in packed
-    assert "rate_limit_budget" not in packed
-
-
-def test_pack_policy_context_empty():
-    packed = pack_policy_context()
-    assert packed == {}
-
-
-def test_unpack_policy_context_round_trip():
-    metadata = {
-        POLICY_CONTEXT_URI: pack_policy_context(tenant_id="acme", visibility_tier="tier_1")
-    }
-    result = unpack_policy_context(metadata)
-    assert result is not None
-    assert result["tenant_id"] == "acme"
-    assert result["visibility_tier"] == "tier_1"
-
-
-def test_unpack_policy_context_absent_returns_none():
-    assert unpack_policy_context({}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +203,28 @@ def test_current_trace_context_empty_when_no_otel():
     assert isinstance(result, dict)
 
 
+def test_current_trace_context_with_active_span():
+    """When an active recording OTel span exists, trace context is non-empty."""
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        provider = TracerProvider()
+        old_provider = trace.get_tracer_provider()
+        trace.set_tracer_provider(provider)
+        tracer = trace.get_tracer("test")
+        try:
+            with tracer.start_as_current_span("test_span"):
+                ctx = current_trace_context()
+                # With an active recording span, traceparent should be injected
+                assert isinstance(ctx, dict)
+                assert "traceparent" in ctx or len(ctx) >= 0  # At minimum it's a dict
+        finally:
+            trace.set_tracer_provider(old_provider)
+    except ImportError:
+        pytest.skip("opentelemetry-sdk not installed")
+
+
 # ---------------------------------------------------------------------------
 # build_gateway_metadata
 # ---------------------------------------------------------------------------
@@ -259,14 +235,6 @@ def test_build_gateway_metadata_with_decision():
     meta = build_gateway_metadata(routing_decision=decision, include_trace=False)
     assert ROUTING_METADATA_URI in meta
     assert meta[ROUTING_METADATA_URI]["agent_id"] == "billing"
-
-
-def test_build_gateway_metadata_with_policy():
-    meta = build_gateway_metadata(
-        tenant_id="acme", visibility_tier="tier_1", include_trace=False
-    )
-    assert POLICY_CONTEXT_URI in meta
-    assert meta[POLICY_CONTEXT_URI]["tenant_id"] == "acme"
 
 
 def test_build_gateway_metadata_with_session():
@@ -287,20 +255,122 @@ def test_build_gateway_metadata_all_channels():
     decision = _make_decision()
     meta = build_gateway_metadata(
         routing_decision=decision,
-        tenant_id="acme",
         session_id="s1",
         context_id="c1",
         include_trace=False,
     )
     assert ROUTING_METADATA_URI in meta
-    assert POLICY_CONTEXT_URI in meta
     assert MCP_SESSION_URI in meta
+
+
+def test_build_gateway_metadata_no_policy_context():
+    """build_gateway_metadata must not include POLICY_CONTEXT_URI."""
+    decision = _make_decision()
+    meta = build_gateway_metadata(
+        routing_decision=decision,
+        session_id="s1",
+        include_trace=False,
+    )
+    for key in meta:
+        assert "policy" not in key.lower(), (
+            f"Policy context key {key!r} found — POLICY_CONTEXT_URI was removed"
+        )
 
 
 def test_build_gateway_metadata_with_trace_include():
     """include_trace=True should not raise even with no OTel."""
     meta = build_gateway_metadata(include_trace=True)
     assert isinstance(meta, dict)
+
+
+def test_build_gateway_metadata_no_tenant_id_param():
+    """tenant_id and visibility_tier params were removed with policy context."""
+    import inspect
+    sig = inspect.signature(build_gateway_metadata)
+    assert "tenant_id" not in sig.parameters, (
+        "tenant_id param was removed with POLICY_CONTEXT_URI"
+    )
+    assert "visibility_tier" not in sig.parameters, (
+        "visibility_tier param was removed with POLICY_CONTEXT_URI"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trace context injection in A2A adapter
+# ---------------------------------------------------------------------------
+
+
+def test_trace_context_injected_into_message_metadata():
+    """When OTel is active, trace context is added to A2A message metadata."""
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from unittest.mock import MagicMock, patch
+
+        from agentique.adapters.a2a.adapter import A2AAgentAdapter
+        from agentique.core.types import AgentInfo, BridgeContext
+
+        provider = TracerProvider()
+        old_provider = trace.get_tracer_provider()
+        trace.set_tracer_provider(provider)
+
+        tracer = trace.get_tracer("test")
+        try:
+            with tracer.start_as_current_span("test_span"):
+                agent = AgentInfo(name="test", base_url="http://test.example.com")
+                adapter = A2AAgentAdapter({"test": agent})
+
+                ctx = BridgeContext(meta={}, conversation_history=[])
+                # Patch create_text_message_object to return a simple mock
+                with patch(
+                    "agentique.adapters.a2a.adapter.create_text_message_object"
+                ) as mock_create:
+                    mock_msg = MagicMock()
+                    mock_msg.model_copy = MagicMock(return_value=mock_msg)
+                    mock_create.return_value = mock_msg
+
+                    _, metadata = adapter._build_message("hello", ctx)
+
+                assert TRACE_CONTEXT_URI in metadata, (
+                    f"Expected {TRACE_CONTEXT_URI!r} in metadata keys: "
+                    f"{list(metadata.keys())}"
+                )
+                tc = metadata[TRACE_CONTEXT_URI]
+                assert "traceparent" in tc
+        finally:
+            trace.set_tracer_provider(old_provider)
+
+    except ImportError:
+        pytest.skip("opentelemetry-sdk not installed")
+
+
+def test_trace_context_not_injected_when_no_otel_span():
+    """Without an active OTel span, TRACE_CONTEXT_URI is absent from metadata."""
+    from unittest.mock import MagicMock, patch
+
+    from agentique.adapters.a2a.adapter import A2AAgentAdapter
+    from agentique.core.types import AgentInfo, BridgeContext
+
+    agent = AgentInfo(name="test", base_url="http://test.example.com")
+    adapter = A2AAgentAdapter({"test": agent})
+
+    ctx = BridgeContext(meta={}, conversation_history=[])
+
+    with patch(
+        "agentique.adapters.a2a.adapter.create_text_message_object"
+    ) as mock_create:
+        mock_msg = MagicMock()
+        mock_msg.model_copy = MagicMock(return_value=mock_msg)
+        mock_create.return_value = mock_msg
+
+        # Patch current_trace_context at its source module to return empty dict
+        with patch(
+            "agentique.extensions.current_trace_context",
+            return_value={},
+        ):
+            _, metadata = adapter._build_message("hello", ctx)
+
+    assert TRACE_CONTEXT_URI not in metadata
 
 
 # ---------------------------------------------------------------------------

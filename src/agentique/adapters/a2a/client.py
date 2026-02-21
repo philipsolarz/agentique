@@ -51,6 +51,7 @@ class A2AClientPool:
         extensions: list[str] | None = None,
         supported_transports: list[str] | None = None,
         grpc_channel_factory: Callable[[str], Any] | None = None,
+        a2a_protocol_version: str = "0.3",
     ) -> None:
         self._timeout = timeout
         self._user_config = client_config
@@ -58,6 +59,7 @@ class A2AClientPool:
         self._extensions = extensions or []
         self._supported_transports = supported_transports or []
         self._grpc_channel_factory = grpc_channel_factory
+        self._a2a_protocol_version = a2a_protocol_version
         self._clients: dict[str, Any] = {}
 
     async def get(self, base_url: str) -> Any:
@@ -67,7 +69,10 @@ class A2AClientPool:
 
         config = self._user_config
         if config is None:
-            http_client = httpx.AsyncClient(timeout=self._timeout)
+            http_client = httpx.AsyncClient(
+                timeout=self._timeout,
+                headers={"A2A-Version": self._a2a_protocol_version},
+            )
             config_kwargs: dict[str, Any] = {"httpx_client": http_client}
 
             # Extensions

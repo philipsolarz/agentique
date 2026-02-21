@@ -56,7 +56,6 @@ class RoutingDecision(BaseModel):
     * A **reasoning** string for audit logs and span attributes.
     * An ordered **fallback list** for graceful degradation when the
       primary agent is unavailable or returns an error.
-    * A **decomposition hint** for future multi-step orchestration.
     """
 
     agent_id: str = Field(
@@ -84,14 +83,6 @@ class RoutingDecision(BaseModel):
         description=(
             "Ordered list of fallback agent names to try if the primary "
             "agent fails or is unavailable. May be empty."
-        ),
-    )
-    requires_decomposition: bool = Field(
-        default=False,
-        description=(
-            "Hint: True when the request clearly spans multiple distinct "
-            "domains that no single agent can fully handle. Signals that "
-            "future multi-step orchestration would benefit this request."
         ),
     )
 
@@ -147,9 +138,7 @@ _DEFAULT_SYSTEM_PROMPT = (
     "  • agent_id   — the exact agent name from the list\n"
     "  • confidence — a float from 0.0 (very uncertain) to 1.0 (near-certain)\n"
     "  • reasoning  — one concise sentence explaining your choice\n"
-    "  • fallback_agents — ordered list of backup agent names (may be empty)\n"
-    "  • requires_decomposition — true only when the request clearly spans "
-    "multiple distinct domains that no single agent can fully satisfy\n\n"
+    "  • fallback_agents — ordered list of backup agent names (may be empty)\n\n"
     "Use high confidence (≥0.8) only when the match is unambiguous. "
     "Always set agent_id to the exact agent name as it appears in the list."
 )
@@ -344,7 +333,6 @@ class LLMRouter:
                     confidence=0.5,
                     reasoning="Plain-text routing (structured sampling unavailable)",
                     fallback_agents=[],
-                    requires_decomposition=False,
                 )
             except Exception as exc:
                 # If ctx.sample() itself is broken, try the user-supplied fallback.
@@ -646,14 +634,6 @@ def _log_routing_decision(
             decision.confidence,
             decision.reasoning,
         )
-    elif decision.requires_decomposition:
-        logger.info(
-            "LLM router: routing to '%s' (confidence=%.2f) — "
-            "request may benefit from decomposition: %s",
-            decision.agent_id,
-            decision.confidence,
-            decision.reasoning,
-        )
     else:
         logger.info(
             "LLM router: selected '%s' (confidence=%.2f): %s",
@@ -741,10 +721,6 @@ def _annotate_span(decision: RoutingDecision) -> None:
                 "agentique.routing.confidence", decision.confidence
             )
             span.set_attribute("agentique.routing.reasoning", decision.reasoning)
-            span.set_attribute(
-                "agentique.routing.requires_decomposition",
-                decision.requires_decomposition,
-            )
             if decision.fallback_agents:
                 span.set_attribute(
                     "agentique.routing.fallback_agents",

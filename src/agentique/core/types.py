@@ -270,6 +270,7 @@ class TaskTracker:
     message: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     hierarchy: AgentHierarchy | None = None
+    agent_name: str | None = None  # which agent this task was sent to
 
     def transition(self, new_state: TaskState, message: str | None = None) -> bool:
         if self.state.is_terminal:

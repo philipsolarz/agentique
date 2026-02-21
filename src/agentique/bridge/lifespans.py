@@ -192,6 +192,72 @@ def make_health_monitor_lifespan(
     return _lifespan(_monitor)
 
 
+def make_artifact_cleanup_lifespan(
+    task_manager: Any,
+    *,
+    ttl: float,
+    interval: float | None = None,
+) -> Any:
+    """Create a lifespan that periodically evicts expired artifacts.
+
+    Runs a background task every *interval* seconds (defaults to ``ttl / 2``
+    with a minimum of 60 seconds) that calls
+    ``task_manager.evict_all_expired_artifacts()``.
+
+    Args:
+        task_manager: The ``TaskManager`` instance whose artifacts to clean up.
+        ttl: Artifact time-to-live in seconds. Artifacts older than this
+            are evicted.
+        interval: Cleanup interval in seconds. Defaults to ``max(ttl / 2, 60)``.
+
+    Returns:
+        A FastMCP ``Lifespan`` instance.
+    """
+    from fastmcp.server.lifespan import lifespan as _lifespan
+
+    _interval = interval if interval is not None else max(ttl / 2, 60.0)
+
+    async def _cleanup_loop() -> None:
+        while True:
+            if _anyio is not None:
+                await _anyio.sleep(_interval)
+            else:
+                await asyncio.sleep(_interval)
+            try:
+                evicted = task_manager.evict_all_expired_artifacts()
+                if evicted:
+                    logger.debug("Artifact cleanup: evicted %d expired artifacts", evicted)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Artifact cleanup failed: %s", exc)
+
+    async def _artifact_cleanup(server: Any) -> Any:
+        logger.debug(
+            "Artifact cleanup started (ttl=%.1fs, interval=%.1fs)", ttl, _interval
+        )
+        if _anyio is not None:
+            async with _anyio.create_task_group() as tg:
+                tg.start_soon(_cleanup_loop)
+                yield {}
+                tg.cancel_scope.cancel()
+        else:
+            task = asyncio.create_task(
+                _cleanup_loop(), name="agentique-artifact-cleanup"
+            )
+            try:
+                yield {}
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        logger.debug("Artifact cleanup stopped")
+
+    return _lifespan(_artifact_cleanup)
+
+
 def compose_lifespans(*lifespans: Any) -> Any | None:
     """Compose multiple lifespan instances with ``|``.
 

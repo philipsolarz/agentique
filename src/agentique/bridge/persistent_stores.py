@@ -182,6 +182,36 @@ class RedisTaskStore:
             keys.append(task_id)
         return keys
 
+    def _conv_key(self, context_id: str) -> str:
+        return f"{self._key_prefix}conv:{context_id}"
+
+    async def save_conversation(
+        self,
+        context_id: str,
+        turns: list[dict[str, str]],
+    ) -> None:
+        """Persist conversation history to Redis."""
+        data = json.dumps(turns)
+        key = self._conv_key(context_id)
+        if self._ttl > 0:
+            await self._client.setex(key, self._ttl, data)
+        else:
+            await self._client.set(key, data)
+
+    async def load_conversation(
+        self,
+        context_id: str,
+    ) -> list[dict[str, str]]:
+        """Load conversation history from Redis."""
+        raw = await self._client.get(self._conv_key(context_id))
+        if raw is None:
+            return []
+        try:
+            return json.loads(raw)
+        except Exception:
+            logger.warning("Failed to deserialize conversation for %s", context_id)
+            return []
+
     async def close(self) -> None:
         """Close the Redis connection."""
         await self._client.aclose()
@@ -299,6 +329,46 @@ class DynamoDBTaskStore:
                 if task_id:
                     ids.append(task_id)
         return ids
+
+    async def save_conversation(
+        self,
+        context_id: str,
+        turns: list[dict[str, str]],
+    ) -> None:
+        """Persist conversation history to DynamoDB."""
+        client = await self._get_client()
+        data = json.dumps(turns)
+        # Store conversations with a synthetic task_id of "conv:{context_id}"
+        await client.put_item(
+            TableName=self._table_name,
+            Item={
+                "task_id": {"S": f"conv:{context_id}"},
+                "data": {"S": data},
+                "state": {"S": "conversation"},
+            },
+        )
+
+    async def load_conversation(
+        self,
+        context_id: str,
+    ) -> list[dict[str, str]]:
+        """Load conversation history from DynamoDB."""
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self._table_name,
+            Key={"task_id": {"S": f"conv:{context_id}"}},
+        )
+        item = response.get("Item")
+        if not item:
+            return []
+        raw = item.get("data", {}).get("S")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except Exception:
+            logger.warning("Failed to deserialize conversation for %s", context_id)
+            return []
 
     async def close(self) -> None:
         """Close the DynamoDB client."""
