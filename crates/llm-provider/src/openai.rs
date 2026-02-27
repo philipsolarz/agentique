@@ -170,6 +170,7 @@ struct StreamingDelta {
 
 #[derive(Deserialize)]
 struct StreamingToolCall {
+    #[allow(dead_code)]
     index: usize,
     id: Option<String>,
     #[serde(rename = "type")]

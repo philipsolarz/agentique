@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use llm_provider::{CompletionProvider, CompletionRequest, FinishReason, Message};
 use observability::BudgetTracker;
+use ripple_engine::ReplSession;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use crate::session::SessionStore;
 use crate::tool_router::ToolRouter;
 
 pub struct AgentLoop {
@@ -13,6 +16,8 @@ pub struct AgentLoop {
     model: String,
     max_steps: u32,
     budget: Arc<BudgetTracker>,
+    repl_session: Arc<Mutex<ReplSession>>,
+    session_store: Option<SessionStore>,
 }
 
 impl AgentLoop {
@@ -23,6 +28,7 @@ impl AgentLoop {
         model: impl Into<String>,
         max_steps: u32,
         budget: Arc<BudgetTracker>,
+        repl_session: Arc<Mutex<ReplSession>>,
     ) -> Self {
         let mut conversation = Vec::new();
         conversation.push(Message::system(system_prompt));
@@ -34,7 +40,15 @@ impl AgentLoop {
             model: model.into(),
             max_steps,
             budget,
+            repl_session,
+            session_store: None,
         }
+    }
+
+    /// Enable session persistence to a JSONL file.
+    pub fn with_session_store(mut self, store: SessionStore) -> Self {
+        self.session_store = Some(store);
+        self
     }
 
     /// Compute cost in microdollars from token usage.
@@ -50,10 +64,38 @@ impl AgentLoop {
         self.budget.spent_dollars()
     }
 
+    /// Persist a message to the session store (if enabled).
+    async fn persist(&self, message: &Message) {
+        if let Some(store) = &self.session_store {
+            store.log_message(message).await;
+        }
+    }
+
+    /// Build the messages list, injecting REPL state summary if variables exist.
+    async fn build_messages(&self) -> Vec<Message> {
+        let repl = self.repl_session.lock().await;
+        let summary = repl.format_state_summary();
+
+        let mut messages = self.conversation.clone();
+
+        if !summary.starts_with("REPL state: (empty)") {
+            if let Some(pos) = messages.iter().rposition(|m| m.role == llm_provider::Role::User) {
+                messages.insert(
+                    pos,
+                    Message::system(format!("Current REPL session state:\n{summary}")),
+                );
+            }
+        }
+
+        messages
+    }
+
     /// Process a user message through the agent loop.
     /// Returns the final assistant text response.
     pub async fn process(&mut self, user_input: &str) -> Result<String, anyhow::Error> {
-        self.conversation.push(Message::user(user_input));
+        let user_msg = Message::user(user_input);
+        self.persist(&user_msg).await;
+        self.conversation.push(user_msg);
 
         let tools = self.tool_router.tool_definitions();
         let tools_option = if tools.is_empty() { None } else { Some(tools) };
@@ -61,9 +103,11 @@ impl AgentLoop {
         for step in 0..self.max_steps {
             debug!(step, "Agent loop step");
 
+            let messages = self.build_messages().await;
+
             let request = CompletionRequest {
                 model: self.model.clone(),
-                messages: self.conversation.clone(),
+                messages,
                 tools: tools_option.clone(),
                 temperature: Some(0.0),
                 max_tokens: Some(4096),
@@ -78,8 +122,8 @@ impl AgentLoop {
             );
             if let Err(e) = self.budget.record(cost_microdollars) {
                 warn!("Budget exceeded: {e}");
-                // Push what we have and return gracefully
                 if let Some(content) = &response.message.content {
+                    self.persist(&response.message).await;
                     self.conversation.push(response.message.clone());
                     return Ok(format!(
                         "{content}\n\n[Budget exceeded — session cost: ${:.4}]",
@@ -107,10 +151,9 @@ impl AgentLoop {
                     .cloned()
                     .unwrap_or_default();
 
-                // Push the assistant message with tool calls
+                self.persist(&response.message).await;
                 self.conversation.push(response.message);
 
-                // Execute each tool call and collect results
                 for tool_call in &tool_calls {
                     let name = &tool_call.function.name;
                     let arguments: serde_json::Value =
@@ -135,15 +178,29 @@ impl AgentLoop {
                         );
                     }
 
-                    self.conversation
-                        .push(Message::tool_result(&tool_call.id, result.content));
+                    let tool_msg = Message::tool_result(&tool_call.id, &result.content);
+                    self.persist(&tool_msg).await;
+                    self.conversation.push(tool_msg);
                 }
 
-                // Continue the loop to send tool results back to the LLM
+                // Check if REPL has final variables — early termination
+                {
+                    let repl = self.repl_session.lock().await;
+                    if repl.has_final() {
+                        let finals: Vec<String> = repl
+                            .finals()
+                            .map(|(k, v)| format!("{k}: {v}"))
+                            .collect();
+                        info!("REPL has final variables, terminating loop");
+                        return Ok(finals.join("\n"));
+                    }
+                }
+
                 continue;
             }
 
-            // No tool calls — we have the final response
+            // No tool calls — final response
+            self.persist(&response.message).await;
             let content = response
                 .message
                 .content

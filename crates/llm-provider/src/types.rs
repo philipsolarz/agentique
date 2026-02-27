@@ -138,3 +138,74 @@ pub struct ProviderCapabilities {
     /// Cost per output token in USD.
     pub cost_per_output_token: f64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_constructors() {
+        let sys = Message::system("You are helpful");
+        assert_eq!(sys.role, Role::System);
+        assert_eq!(sys.content.as_deref(), Some("You are helpful"));
+        assert!(sys.tool_calls.is_none());
+
+        let user = Message::user("Hello");
+        assert_eq!(user.role, Role::User);
+
+        let asst = Message::assistant("Hi there");
+        assert_eq!(asst.role, Role::Assistant);
+
+        let tool = Message::tool_result("call_123", "result data");
+        assert_eq!(tool.role, Role::Tool);
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call_123"));
+        assert_eq!(tool.content.as_deref(), Some("result data"));
+    }
+
+    #[test]
+    fn message_serialization_roundtrip() {
+        let msg = Message::user("test message");
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role, Role::User);
+        assert_eq!(deserialized.content.as_deref(), Some("test message"));
+    }
+
+    #[test]
+    fn message_with_tool_calls_roundtrip() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "tc_1".to_string(),
+                call_type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "file_read".to_string(),
+                    arguments: r#"{"path":"/tmp/test.txt"}"#.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        let tc = deserialized.tool_calls.unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].function.name, "file_read");
+    }
+
+    #[test]
+    fn role_serialization() {
+        assert_eq!(serde_json::to_string(&Role::System).unwrap(), r#""system""#);
+        assert_eq!(serde_json::to_string(&Role::User).unwrap(), r#""user""#);
+        assert_eq!(serde_json::to_string(&Role::Assistant).unwrap(), r#""assistant""#);
+        assert_eq!(serde_json::to_string(&Role::Tool).unwrap(), r#""tool""#);
+    }
+
+    #[test]
+    fn skip_none_fields_in_serialization() {
+        let msg = Message::user("hi");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("tool_calls"));
+        assert!(!json.contains("tool_call_id"));
+    }
+}

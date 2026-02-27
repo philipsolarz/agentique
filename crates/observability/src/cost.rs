@@ -74,3 +74,54 @@ impl BudgetTracker {
             .saturating_sub(self.spent_microdollars())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_tracker_records_costs() {
+        let tracker = BudgetTracker::new(1_000_000); // $1.00
+        assert_eq!(tracker.spent_microdollars(), 0);
+        assert_eq!(tracker.remaining_microdollars(), 1_000_000);
+
+        let result = tracker.record(500_000);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 500_000);
+        assert_eq!(tracker.spent_microdollars(), 500_000);
+        assert_eq!(tracker.remaining_microdollars(), 500_000);
+    }
+
+    #[test]
+    fn budget_tracker_rejects_on_exceeded() {
+        let tracker = BudgetTracker::new(100);
+        tracker.record(80).unwrap();
+        let result = tracker.record(50); // total=130 > 100
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn budget_tracker_exact_ceiling_ok() {
+        let tracker = BudgetTracker::new(100);
+        let result = tracker.record(100); // exactly at ceiling
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn budget_tracker_with_dollar_ceiling() {
+        let tracker = BudgetTracker::with_dollar_ceiling(2.50);
+        assert_eq!(tracker.remaining_microdollars(), 2_500_000);
+        tracker.record(1_000_000).unwrap();
+        assert!((tracker.spent_dollars() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_tracker_multiple_records() {
+        let tracker = BudgetTracker::new(1000);
+        for _ in 0..10 {
+            tracker.record(100).unwrap();
+        }
+        assert_eq!(tracker.spent_microdollars(), 1000);
+        assert!(tracker.record(1).is_err());
+    }
+}
