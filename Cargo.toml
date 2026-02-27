@@ -7,6 +7,7 @@ members = [
     "crates/agentique-core",
     "crates/mcp-manager",
     "crates/data-layer",
+    "src-tauri",
 ]
 
 [workspace.dependencies]
@@ -23,3 +24,5 @@ async-trait = "0.1"
 schemars = "0.8"
 futures = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }

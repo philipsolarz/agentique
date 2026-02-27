@@ -1,11 +1,21 @@
 pub mod file_read;
 pub mod file_write;
 pub mod list_files;
+pub mod repl_chunks;
 pub mod repl_get;
+pub mod repl_len;
+pub mod repl_load_file;
+pub mod repl_search;
 pub mod repl_set;
+pub mod repl_slice;
 
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use list_files::ListFilesTool;
+pub use repl_chunks::ReplChunksTool;
 pub use repl_get::ReplGetTool;
+pub use repl_len::ReplLenTool;
+pub use repl_load_file::ReplLoadFileTool;
+pub use repl_search::ReplSearchTool;
 pub use repl_set::ReplSetTool;
+pub use repl_slice::ReplSliceTool;

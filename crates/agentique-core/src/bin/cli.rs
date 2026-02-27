@@ -2,8 +2,11 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agentique_core::tools::{FileReadTool, FileWriteTool, ListFilesTool, ReplGetTool, ReplSetTool};
-use agentique_core::{AgentLoop, SessionStore, ToolRouter};
+use agentique_core::tools::{
+    FileReadTool, FileWriteTool, ListFilesTool, ReplChunksTool, ReplGetTool, ReplLenTool,
+    ReplLoadFileTool, ReplSearchTool, ReplSetTool, ReplSliceTool,
+};
+use agentique_core::{AgentLoop, AgentStreamEvent, SessionStore, ToolRouter};
 use llm_provider::{OpenAiProvider, RetryProvider};
 use observability::BudgetTracker;
 use ripple_engine::ReplSession;
@@ -12,9 +15,18 @@ use tokio::sync::Mutex;
 const SYSTEM_PROMPT: &str = r#"You are Agentique, a helpful coding and research assistant.
 
 You have access to:
-- File system tools (file_read, file_write, list_files) for reading, writing, and listing files.
-- REPL session tools (repl_set, repl_get) for storing and retrieving named variables across turns.
-  Use 'final_' prefix on variable names to mark terminal outputs (e.g., 'final_answer').
+- File system tools (file_read, file_write, list_files) for working with files.
+- REPL session tools for managing variables:
+  - repl_set / repl_get: Store and retrieve named variables.
+  - repl_load_file: Load a file into the REPL as a symbolic variable (you see metadata, not content).
+  - repl_slice: Extract a character range from a variable.
+  - repl_search: Regex search within a variable, returns matches with line numbers.
+  - repl_chunks: Split a large variable into smaller chunks for processing.
+  - repl_len: Get size and token info about a variable.
+
+For large files or codebases, use repl_load_file to load them, then use repl_search/repl_slice/repl_chunks
+to work with specific parts. This keeps large content out of the conversation context.
+Use 'final_' prefix on variable names to mark terminal outputs (e.g., 'final_answer').
 
 Always explain what you're doing and present results clearly."#;
 
@@ -49,6 +61,11 @@ async fn main() -> anyhow::Result<()> {
     router.register(Box::new(ListFilesTool));
     router.register(Box::new(ReplSetTool::new(Arc::clone(&repl_session))));
     router.register(Box::new(ReplGetTool::new(Arc::clone(&repl_session))));
+    router.register(Box::new(ReplLoadFileTool::new(Arc::clone(&repl_session))));
+    router.register(Box::new(ReplSliceTool::new(Arc::clone(&repl_session))));
+    router.register(Box::new(ReplSearchTool::new(Arc::clone(&repl_session))));
+    router.register(Box::new(ReplChunksTool::new(Arc::clone(&repl_session))));
+    router.register(Box::new(ReplLenTool::new(Arc::clone(&repl_session))));
 
     let session_store = SessionStore::new(&home_dir).await?;
     let session_id = session_store.session_id();
@@ -90,10 +107,29 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        match agent.process(input).await {
+        match agent
+            .process_streaming(input, |event| match &event {
+                AgentStreamEvent::Token(token) => {
+                    print!("{token}");
+                    let _ = io::stdout().flush();
+                }
+                AgentStreamEvent::ToolCallStart(name) => {
+                    print!("\n[calling {name}...]");
+                    let _ = io::stdout().flush();
+                }
+                AgentStreamEvent::ToolCallEnd(name) => {
+                    println!(" [{name} done]");
+                }
+                AgentStreamEvent::Done(_) => {
+                    println!();
+                }
+            })
+            .await
+        {
             Ok(response) => {
-                println!("\n{response}");
+                // Response already printed via streaming tokens
                 println!("[cost so far: ${:.4}]\n", agent.spent_dollars());
+                let _ = response; // already displayed
             }
             Err(err) => {
                 eprintln!("\nError: {err}\n");

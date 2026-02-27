@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Agentique",
+  "version": "0.1.0",
+  "identifier": "com.agentique.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "title": "Agentique",
+    "windows": [
+      {
+        "label": "main",
+        "title": "Agentique",
+        "width": 1024,
+        "height": 768,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
