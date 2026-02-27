@@ -1,0 +1,23 @@
+[package]
+name = "agentique-core"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+observability = { path = "../observability" }
+llm-provider = { path = "../llm-provider" }
+ripple-engine = { path = "../ripple-engine" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

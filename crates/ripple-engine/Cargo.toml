@@ -1,0 +1,13 @@
+[package]
+name = "ripple-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+observability = { path = "../observability" }
+llm-provider = { path = "../llm-provider" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/observability",
+    "crates/llm-provider",
+    "crates/ripple-engine",
+    "crates/agentique-core",
+    "crates/mcp-manager",
+    "crates/data-layer",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+thiserror = "2"
+async-trait = "0.1"
+schemars = "0.8"
+futures = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
