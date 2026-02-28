@@ -18,7 +18,7 @@ tantivy = "0.22"
 petgraph = "0.7"
 
 # File watching
-notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+notify = "7"
 walkdir = "2"
 
 # Common

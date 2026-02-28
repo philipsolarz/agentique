@@ -7,10 +7,16 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { StepInfo } from "./RecursionTree";
 import type { Artifact } from "./ArtifactViewer";
 
+interface ToolCallInfo {
+  name: string;
+  done: boolean;
+}
+
 interface ChatMessage {
   role: "user" | "assistant" | "error";
   content: string;
   timestamp: string;
+  toolCalls?: ToolCallInfo[];
 }
 
 interface ToolApproval {
@@ -161,22 +167,58 @@ function ToolApprovalDialog({
   );
 }
 
+function ToolCallsDisplay({ toolCalls, collapsed: initialCollapsed }: { toolCalls: ToolCallInfo[]; collapsed?: boolean }) {
+  const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
+  if (toolCalls.length === 0) return null;
+  return (
+    <div className="tool-calls-display">
+      <button className="tool-calls-toggle" onClick={() => setCollapsed(!collapsed)}>
+        {collapsed ? "\u25b8" : "\u25be"} {toolCalls.length} tool call{toolCalls.length > 1 ? "s" : ""}
+      </button>
+      {!collapsed && (
+        <div className="tool-calls-list">
+          {toolCalls.map((tc, i) => (
+            <div key={i} className={`tool-call-item ${tc.done ? "done" : "running"}`}>
+              <span className="tool-call-icon">{tc.done ? "\u2713" : "\u25cf"}</span>
+              <span className="tool-call-name">{tc.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThinkingIndicator() {
+  return (
+    <div className="thinking-indicator">
+      <span className="thinking-dot" />
+      <span className="thinking-dot" />
+      <span className="thinking-dot" />
+    </div>
+  );
+}
+
 function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
+  const [thinking, setThinking] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<ToolApproval | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent, pendingApproval]);
+  }, [messages, streamingContent, pendingApproval, thinking]);
 
   // Reset messages when session changes
   useEffect(() => {
     setMessages([]);
     setStreamingContent("");
+    setActiveToolCalls([]);
+    setThinking(false);
     setPendingApproval(null);
   }, [sessionId]);
 
@@ -193,15 +235,22 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
     setInput("");
     setSending(true);
     setStreamingContent("");
+    setActiveToolCalls([]);
+    setThinking(true);
 
     const onEvent = new Channel<StreamEvent>();
     onEvent.onmessage = (event: StreamEvent) => {
       if (event.type === "TokenDelta") {
+        setThinking(false);
         setStreamingContent((prev) => prev + event.data);
       } else if (event.type === "ToolCallStart") {
-        setStreamingContent((prev) => prev + `\n\`[calling ${event.data}...]\``);
+        setThinking(false);
+        setActiveToolCalls((prev) => [...prev, { name: event.data, done: false }]);
       } else if (event.type === "ToolCallEnd") {
-        setStreamingContent((prev) => prev + ` \`[${event.data} done]\`\n`);
+        setActiveToolCalls((prev) =>
+          prev.map((tc) => (tc.name === event.data ? { ...tc, done: true } : tc))
+        );
+        setThinking(true);
       } else if (event.type === "ToolApprovalRequired") {
         setPendingApproval({
           callId: event.data.call_id,
@@ -210,16 +259,24 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
         });
       } else if (event.type === "AssistantMessage") {
         setStreamingContent("");
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: event.data,
-            timestamp: new Date().toISOString(),
-          },
-        ]);
+        setThinking(false);
+        setActiveToolCalls((prevTools) => {
+          const tools = prevTools.length > 0 ? [...prevTools] : undefined;
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: event.data,
+              timestamp: new Date().toISOString(),
+              toolCalls: tools,
+            },
+          ]);
+          return [];
+        });
       } else if (event.type === "Error") {
         setStreamingContent("");
+        setThinking(false);
+        setActiveToolCalls([]);
         setMessages((prev) => [
           ...prev,
           {
@@ -268,6 +325,7 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
       ]);
     } finally {
       setSending(false);
+      setThinking(false);
       setPendingApproval(null);
     }
   }
@@ -284,6 +342,9 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
       <div className="messages">
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
+            {msg.toolCalls && msg.toolCalls.length > 0 && (
+              <ToolCallsDisplay toolCalls={msg.toolCalls} collapsed={true} />
+            )}
             <div className="message-content">
               {msg.role === "assistant" ? (
                 <MarkdownContent content={msg.content} />
@@ -296,11 +357,21 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
             </div>
           </div>
         ))}
+        {activeToolCalls.length > 0 && (
+          <div className="message assistant streaming">
+            <ToolCallsDisplay toolCalls={activeToolCalls} collapsed={false} />
+          </div>
+        )}
         {streamingContent && (
           <div className="message assistant streaming">
             <div className="message-content">
               <MarkdownContent content={streamingContent} />
             </div>
+          </div>
+        )}
+        {thinking && !streamingContent && activeToolCalls.length === 0 && (
+          <div className="message assistant streaming">
+            <ThinkingIndicator />
           </div>
         )}
         {pendingApproval && (

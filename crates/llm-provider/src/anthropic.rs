@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream, StreamExt};
+use futures::stream::{BoxStream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -440,61 +440,23 @@ impl CompletionProvider for AnthropicProvider {
 
         let byte_stream = response.bytes_stream();
 
-        // Track active tool call state across SSE events
-        // Anthropic streams tool call arguments as input_json_delta chunks
-        // that need to be assembled and emitted as ToolCall deltas
-        let sse_stream = byte_stream
-            .map(|result| match result {
-                Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).to_string()),
-                Err(e) => Err(ProviderError::RequestFailed(e)),
-            })
+        // Use shared SSE parser, then process Anthropic-specific events
+        // with state accumulation for token counts
+        let sse_stream = crate::sse::parse_sse_events::<StreamEvent>(byte_stream)
             .scan(
                 StreamState {
-                    buffer: String::new(),
                     input_tokens: 0,
                     output_tokens: 0,
                 },
-                |state, chunk_result| {
-                    let chunk = match chunk_result {
-                        Ok(c) => c,
-                        Err(e) => return futures::future::ready(Some(vec![Err(e)])),
+                |state, result| {
+                    let out = match result {
+                        Err(e) => Some(Err(e)),
+                        Ok(event) => process_stream_event(event, state).map(Ok),
                     };
-                    state.buffer.push_str(&chunk);
-
-                    let mut events = Vec::new();
-                    while let Some(pos) = state.buffer.find("\n\n") {
-                        let event_text = state.buffer[..pos].to_string();
-                        state.buffer = state.buffer[pos + 2..].to_string();
-
-                        // Parse SSE: may have "event: ..." and "data: ..." lines
-                        let mut data_line = None;
-                        for line in event_text.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                data_line = Some(data.trim().to_string());
-                            }
-                        }
-
-                        let Some(data) = data_line else {
-                            continue;
-                        };
-
-                        match serde_json::from_str::<StreamEvent>(&data) {
-                            Ok(event) => {
-                                if let Some(chunk) = process_stream_event(event, state) {
-                                    events.push(Ok(chunk));
-                                }
-                            }
-                            Err(e) => {
-                                // Some events we don't handle; only error on real parse failures
-                                debug!(error = %e, data = %data, "Skipping unparseable SSE event");
-                            }
-                        }
-                    }
-
-                    futures::future::ready(Some(events))
+                    futures::future::ready(Some(out))
                 },
             )
-            .flat_map(stream::iter);
+            .filter_map(|opt| async move { opt });
 
         Ok(sse_stream.boxed())
     }
@@ -516,7 +478,6 @@ impl CompletionProvider for AnthropicProvider {
 }
 
 struct StreamState {
-    buffer: String,
     input_tokens: u32,
     output_tokens: u32,
 }

@@ -2,42 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agentique_core::tools::{
-    CodeSearchTool, FileReadTool, FileWriteTool, FindRelatedTool, ListFilesTool, ReplChunksTool,
-    ReplGetTool, ReplLenTool, ReplLoadFileTool, ReplSearchTool, ReplSetTool, ReplSliceTool,
-};
-use agentique_core::{AgentEvent, AgentLoop, AgentOp, SessionStore, ToolRouter};
-use llm_provider::{AnthropicProvider, CompletionProvider, OpenAiProvider, RetryProvider};
-use mcp_manager::McpManager;
-use observability::BudgetTracker;
-use ripple_engine::ReplSession;
-use serde::Serialize;
-use tauri::{ipc::Channel, Manager, State};
+use agentique_core::{AgentEvent, AgentOp, PersistedSessionInfo, SessionBuilder, SessionStore};
+use serde::{Deserialize, Serialize};
+use tauri::{ipc::Channel, State};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, warn};
-
-const SYSTEM_PROMPT: &str = r#"You are Agentique, a helpful coding and research assistant.
-
-You have access to:
-- File system tools (file_read, file_write, list_files) for working with files.
-- Code intelligence tools:
-  - code_search: Full-text search across indexed source files (content + symbol names).
-  - find_related_files: Find files related to a given file via the dependency graph.
-- REPL session tools for managing variables:
-  - repl_set / repl_get: Store and retrieve named variables.
-  - repl_load_file: Load a file into the REPL as a symbolic variable (you see metadata, not content).
-  - repl_slice: Extract a character range from a variable.
-  - repl_search: Regex search within a variable, returns matches with line numbers.
-  - repl_chunks: Split a large variable into smaller chunks for processing.
-  - repl_len: Get size and token info about a variable.
-
-For large files or codebases, use repl_load_file to load them, then use repl_search/repl_slice/repl_chunks
-to work with specific parts. This keeps large content out of the conversation context.
-Use code_search to find functions, classes, or patterns across the project.
-Use find_related_files to understand file dependencies before making changes.
-Use 'final_' prefix on variable names to mark terminal outputs (e.g., 'final_answer').
-
-Always explain what you're doing and present results clearly."#;
+use tracing::info;
 
 /// Info about a session, returned to the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -82,11 +51,8 @@ pub enum StreamEvent {
 
 /// Holds a live agent session with its channel handles.
 struct AgentSession {
-    /// Send ops (UserTurn, Interrupt, ExecApproval) to the agent loop.
     op_tx: mpsc::Sender<AgentOp>,
-    /// Receive events from the agent loop. Protected by mutex since only one
-    /// send_message call should consume events at a time.
-    event_rx: Mutex<mpsc::Receiver<AgentEvent>>,
+    event_rx: Arc<Mutex<mpsc::Receiver<AgentEvent>>>,
     model: String,
     budget: f64,
     session_id: String,
@@ -107,124 +73,22 @@ async fn create_session(
     api_key: String,
     model: String,
     budget: f64,
+    base_url: Option<String>,
 ) -> Result<SessionInfo, String> {
-    let is_anthropic = model.starts_with("claude") || model.starts_with("anthropic/");
-    let provider: Box<dyn CompletionProvider> = if is_anthropic {
-        Box::new(RetryProvider::with_defaults(Box::new(
-            AnthropicProvider::new(&api_key).with_model(&model),
-        )))
-    } else {
-        Box::new(RetryProvider::with_defaults(Box::new(
-            OpenAiProvider::new(&api_key).with_model(&model),
-        )))
-    };
-    let budget_tracker = Arc::new(BudgetTracker::with_dollar_ceiling(budget));
-    let repl_session = Arc::new(Mutex::new(ReplSession::new()));
-
-    let mut router = ToolRouter::new();
-    router.register(Box::new(FileReadTool));
-    router.register(Box::new(FileWriteTool));
-    router.register(Box::new(ListFilesTool));
-    router.register(Box::new(ReplSetTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplGetTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplLoadFileTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplSliceTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplSearchTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplChunksTool::new(Arc::clone(&repl_session))));
-    router.register(Box::new(ReplLenTool::new(Arc::clone(&repl_session))));
-
-    // Data-layer tools: code search index + dependency graph
-    let index_dir = state.data_dir.join("index");
-    let index_manager = match data_layer::IndexManager::new(&index_dir) {
-        Ok(idx) => {
-            // Index the current working directory in the background
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            match idx.index_directory(&cwd) {
-                Ok(count) => info!(count, dir = %cwd.display(), "Indexed source files"),
-                Err(e) => warn!(error = %e, "Failed to index directory"),
-            }
-            Arc::new(Mutex::new(idx))
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to create search index, using in-memory fallback");
-            Arc::new(Mutex::new(
-                data_layer::IndexManager::in_memory().expect("in-memory index"),
-            ))
-        }
-    };
-
-    let dep_graph = Arc::new(Mutex::new(data_layer::DependencyGraph::new()));
-    router.register(Box::new(CodeSearchTool::new(Arc::clone(&index_manager))));
-    router.register(Box::new(FindRelatedTool::new(Arc::clone(&dep_graph))));
-
-    // Load MCP server configs and connect
-    let global_mcp_path = state.data_dir.join("mcp.json");
-    // Project-level config would be .agentique/mcp.json in the project root
-    // For now we only load the global config
-    let mcp_manager = McpManager::load_and_connect(
-        None,
-        Some(&global_mcp_path),
-    )
-    .await
-    .unwrap_or_else(|e| {
-        warn!("Failed to load MCP config: {e}");
-        McpManager::new()
-    });
-
-    let mcp_servers: Vec<String> = mcp_manager
-        .connected_servers()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    if !mcp_servers.is_empty() {
-        info!(servers = ?mcp_servers, "MCP servers connected");
+    let mut builder = SessionBuilder::new(&model, &api_key)
+        .budget(budget)
+        .data_dir(&state.data_dir)
+        .mcp_global_config(state.data_dir.join("mcp.json"));
+    if let Some(url) = &base_url {
+        builder = builder.base_url(url);
     }
-
-    // Extract MCP tool definitions and permission manager before wrapping in Arc<Mutex>
-    let mcp_tool_defs = mcp_manager.aggregate_tools();
-    let mcp_perms = Arc::new(Mutex::new(
-        mcp_manager::PermissionManager::new()
-    ));
-
-    // Copy trusted servers into the shared permission manager
-    {
-        let mut perms = mcp_perms.lock().await;
-        for server in &mcp_servers {
-            // The manager already tracked trusted servers during load_and_connect;
-            // we re-use the same trust decisions by checking the original manager.
-            if mcp_manager.permissions().is_approved(
-                &format!("{server}:__probe__"), true, false
-            ) {
-                perms.trust_server(server);
-            }
-        }
-    }
-
-    let mcp_arc = Arc::new(Mutex::new(mcp_manager));
-
-    // Register MCP tools into the router
-    if !mcp_tool_defs.is_empty() {
-        info!(tool_count = mcp_tool_defs.len(), "Registering MCP tools");
-        router.register_mcp_tools(Arc::clone(&mcp_arc), mcp_tool_defs);
-    }
-
-    let session_store = SessionStore::new(&state.data_dir)
+    let built = builder.build()
         .await
         .map_err(|e| e.to_string())?;
-    let session_id = session_store.session_id().to_string();
 
-    let agent = AgentLoop::new(
-        provider,
-        router,
-        SYSTEM_PROMPT,
-        &model,
-        30,
-        budget_tracker,
-        repl_session,
-    )
-    .with_session_store(session_store)
-    .with_mcp_permissions(Arc::clone(&mcp_perms));
+    let session_id = built.session_id.clone();
+    let mcp_servers = built.mcp_servers.clone();
+    let mcp_arc = built.mcp_manager;
 
     // Create channels for the agent loop
     let (op_tx, op_rx) = mpsc::channel::<AgentOp>(32);
@@ -239,18 +103,19 @@ async fn create_session(
         mcp_servers: mcp_servers.clone(),
     };
 
-    // Spawn the agent loop — it runs forever, waiting for ops
+    // Spawn the agent loop
     tokio::spawn(async move {
-        let mut agent = agent;
+        let mut agent = built.agent;
         agent.run_with_channels(op_rx, event_tx).await;
-        // Shutdown MCP on agent loop exit
-        let mut mgr = mcp_arc.lock().await;
-        mgr.shutdown().await;
+        if let Some(mcp) = mcp_arc {
+            let mut mgr = mcp.lock().await;
+            mgr.shutdown().await;
+        }
     });
 
     let session = AgentSession {
         op_tx,
-        event_rx: Mutex::new(event_rx),
+        event_rx: Arc::new(Mutex::new(event_rx)),
         model,
         budget,
         session_id: session_id.clone(),
@@ -271,22 +136,23 @@ async fn send_message(
     content: String,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
-    let sessions = state.sessions.lock().await;
-    let session = sessions
-        .get(&session_id)
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let (op_tx, event_rx_mutex) = {
+        let sessions = state.sessions.lock().await;
+        let session = sessions
+            .get(&session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        (session.op_tx.clone(), session.event_rx.clone())
+    };
 
-    // Send the user turn op to the agent loop
-    session
-        .op_tx
+    op_tx
         .send(AgentOp::UserTurn(content.clone()))
         .await
         .map_err(|e| format!("Agent loop closed: {e}"))?;
 
-    // Set session name from the first user message (truncated)
+    // Set session name from the first user message
     {
-        let mut sessions_lock = state.sessions.lock().await;
-        if let Some(s) = sessions_lock.get_mut(&session_id) {
+        let mut sessions = state.sessions.lock().await;
+        if let Some(s) = sessions.get_mut(&session_id) {
             if s.name.is_empty() {
                 s.name = content.chars().take(60).collect::<String>();
                 if content.len() > 60 {
@@ -296,12 +162,8 @@ async fn send_message(
         }
     }
 
-    // Lock the event_rx for this message — only one send_message at a time per session
-    let mut event_rx = session.event_rx.lock().await;
-    drop(sessions); // Release sessions lock while we wait for events
+    let mut event_rx = event_rx_mutex.lock().await;
 
-    // Forward events from the agent loop to the Tauri channel until we get
-    // a terminal event (TaskComplete or Error)
     loop {
         match event_rx.recv().await {
             Some(event) => {
@@ -413,28 +275,180 @@ async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionInfo>, S
 }
 
 #[tauri::command]
+async fn resume_session(
+    state: State<'_, AppState>,
+    api_key: String,
+    model: String,
+    budget: f64,
+    session_id: String,
+) -> Result<SessionInfo, String> {
+    let built = SessionBuilder::new(&model, &api_key)
+        .budget(budget)
+        .data_dir(&state.data_dir)
+        .mcp_global_config(state.data_dir.join("mcp.json"))
+        .resume(&session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let sid = built.session_id.clone();
+    let mcp_servers = built.mcp_servers.clone();
+    let mcp_arc = built.mcp_manager;
+
+    let (op_tx, op_rx) = mpsc::channel::<AgentOp>(32);
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(256);
+
+    let info = SessionInfo {
+        session_id: sid.clone(),
+        model: model.clone(),
+        budget,
+        name: String::from("[resumed]"),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        mcp_servers: mcp_servers.clone(),
+    };
+
+    tokio::spawn(async move {
+        let mut agent = built.agent;
+        agent.run_with_channels(op_rx, event_tx).await;
+        if let Some(mcp) = mcp_arc {
+            let mut mgr = mcp.lock().await;
+            mgr.shutdown().await;
+        }
+    });
+
+    let session = AgentSession {
+        op_tx,
+        event_rx: Arc::new(Mutex::new(event_rx)),
+        model,
+        budget,
+        session_id: sid.clone(),
+        name: String::from("[resumed]"),
+        created_at: info.created_at.clone(),
+        mcp_servers,
+    };
+
+    state.sessions.lock().await.insert(sid, session);
+
+    Ok(info)
+}
+
+#[tauri::command]
+async fn fork_session(
+    state: State<'_, AppState>,
+    api_key: String,
+    model: String,
+    budget: f64,
+    source_session_id: String,
+) -> Result<SessionInfo, String> {
+    let built = SessionBuilder::new(&model, &api_key)
+        .budget(budget)
+        .data_dir(&state.data_dir)
+        .mcp_global_config(state.data_dir.join("mcp.json"))
+        .fork(&source_session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let sid = built.session_id.clone();
+    let mcp_servers = built.mcp_servers.clone();
+    let mcp_arc = built.mcp_manager;
+
+    let (op_tx, op_rx) = mpsc::channel::<AgentOp>(32);
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(256);
+
+    let info = SessionInfo {
+        session_id: sid.clone(),
+        model: model.clone(),
+        budget,
+        name: String::from("[forked]"),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        mcp_servers: mcp_servers.clone(),
+    };
+
+    tokio::spawn(async move {
+        let mut agent = built.agent;
+        agent.run_with_channels(op_rx, event_tx).await;
+        if let Some(mcp) = mcp_arc {
+            let mut mgr = mcp.lock().await;
+            mgr.shutdown().await;
+        }
+    });
+
+    let session = AgentSession {
+        op_tx,
+        event_rx: Arc::new(Mutex::new(event_rx)),
+        model,
+        budget,
+        session_id: sid.clone(),
+        name: String::from("[forked]"),
+        created_at: info.created_at.clone(),
+        mcp_servers,
+    };
+
+    state.sessions.lock().await.insert(sid, session);
+
+    Ok(info)
+}
+
+#[tauri::command]
+async fn list_persisted_sessions(
+    state: State<'_, AppState>,
+) -> Result<Vec<PersistedSessionInfo>, String> {
+    SessionStore::list_persisted(&state.data_dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Persisted user settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AppSettings {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub budget: Option<f64>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+}
+
+#[tauri::command]
+async fn load_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let path = state.data_dir.join("config.json");
+    if !path.exists() {
+        return Ok(AppSettings::default());
+    }
+    let data = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_settings(
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<(), String> {
+    tokio::fs::create_dir_all(&state.data_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = state.data_dir.join("config.json");
+    let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, data)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn delete_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().await;
     sessions.remove(&session_id);
-    // Also remove persisted JSONL file if it exists
     let session_file = state.data_dir.join("sessions").join(format!("{session_id}.jsonl"));
     if session_file.exists() {
         let _ = tokio::fs::remove_file(&session_file).await;
     }
     Ok(())
-}
-
-#[tauri::command]
-async fn get_session_cost(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<f64, String> {
-    // Cost is now tracked via CostUpdate events; return 0 as a fallback.
-    // The frontend should track cost from CostUpdate stream events.
-    Ok(0.0)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -452,11 +466,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             create_session,
+            resume_session,
+            fork_session,
             send_message,
             approve_tool_call,
             list_sessions,
+            list_persisted_sessions,
             delete_session,
-            get_session_cost,
+            load_settings,
+            save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agentique");

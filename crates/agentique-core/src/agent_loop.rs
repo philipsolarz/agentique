@@ -31,23 +31,6 @@ impl<'a> ToolDispatch for ToolRouterDispatch<'a> {
 // State machine types
 // ---------------------------------------------------------------------------
 
-/// The current state of the agent loop.
-#[derive(Debug, Clone)]
-pub enum AgentState {
-    /// Waiting for user input.
-    Idle,
-    /// About to call the LLM.
-    LlmCall,
-    /// LLM responded with tool calls; executing them.
-    ToolExecution { calls: Vec<PendingToolCall> },
-    /// A tool call requires user approval before execution.
-    AwaitingApproval { pending: PendingToolCall, remaining: Vec<PendingToolCall> },
-    /// Final response produced.
-    Complete { result: String },
-    /// An error occurred.
-    Error { error: String, recoverable: bool },
-}
-
 /// A tool call waiting to be executed (or approved).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingToolCall {
@@ -188,12 +171,21 @@ impl AgentLoop {
         self
     }
 
+    /// Set the conversation history (e.g., when resuming a session).
+    pub fn with_conversation(mut self, conversation: Vec<Message>) -> Self {
+        self.conversation = conversation;
+        self
+    }
+
     /// Compute cost in microdollars from token usage.
     fn compute_cost_microdollars(&self, prompt_tokens: u32, completion_tokens: u32) -> u64 {
         let caps = self.provider.capabilities();
-        let cost_usd = (prompt_tokens as f64 * caps.cost_per_input_token)
-            + (completion_tokens as f64 * caps.cost_per_output_token);
-        (cost_usd * 1_000_000.0) as u64
+        observability::compute_cost_microdollars(
+            prompt_tokens,
+            completion_tokens,
+            caps.cost_per_input_token,
+            caps.cost_per_output_token,
+        )
     }
 
     /// Get current spend in dollars.
@@ -265,7 +257,7 @@ impl AgentLoop {
     /// For built-in tools: read-only + non-destructive = auto-approved.
     /// For MCP tools: delegates to the MCP PermissionManager's 3-tier policy.
     /// Session-remembered approvals always auto-approve.
-    fn should_auto_approve(&self, tool_name: &str) -> bool {
+    async fn should_auto_approve(&self, tool_name: &str) -> bool {
         if self.session_approved_tools.contains(tool_name) {
             return true;
         }
@@ -273,16 +265,14 @@ impl AgentLoop {
         // For MCP tools, consult MCP permission manager
         if self.tool_router.is_mcp_tool(tool_name) {
             if let Some(perms) = &self.mcp_permissions {
-                // We can't block here, so use try_lock
-                if let Ok(pm) = perms.try_lock() {
-                    let annotations = self.tool_router.annotations(tool_name)
-                        .unwrap_or_default();
-                    return pm.is_approved(
-                        tool_name,
-                        annotations.read_only_hint,
-                        annotations.destructive_hint,
-                    );
-                }
+                let pm = perms.lock().await;
+                let annotations = self.tool_router.annotations(tool_name)
+                    .unwrap_or_default();
+                return pm.is_approved(
+                    tool_name,
+                    annotations.read_only_hint,
+                    annotations.destructive_hint,
+                );
             }
             return false; // MCP tools default to needing approval
         }
@@ -509,7 +499,7 @@ impl AgentLoop {
                     let arguments: serde_json::Value =
                         serde_json::from_str(&tool_call.function.arguments).unwrap_or_default();
 
-                    if self.should_auto_approve(name) {
+                    if self.should_auto_approve(name).await {
                         // Auto-approved: execute directly
                         // Capture old content for artifact tracking on file writes
                         let old_content = Self::capture_old_content_if_file_write(name, &arguments).await;
@@ -549,9 +539,8 @@ impl AgentLoop {
                                         // Also record in MCP permission manager
                                         if self.tool_router.is_mcp_tool(name) {
                                             if let Some(perms) = &self.mcp_permissions {
-                                                if let Ok(mut pm) = perms.try_lock() {
-                                                    pm.approve_for_session(name);
-                                                }
+                                                let mut pm = perms.lock().await;
+                                                pm.approve_for_session(name);
                                             }
                                         }
                                     }
@@ -1099,17 +1088,6 @@ impl AgentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_state_debug() {
-        let state = AgentState::Idle;
-        assert!(format!("{:?}", state).contains("Idle"));
-
-        let state = AgentState::Complete {
-            result: "done".to_string(),
-        };
-        assert!(format!("{:?}", state).contains("Complete"));
-    }
 
     #[test]
     fn agent_event_serialization() {

@@ -172,7 +172,15 @@ impl McpManager {
                 let content: Vec<String> = result
                     .content
                     .iter()
-                    .map(|c| format!("{:?}", c))
+                    .map(|c| {
+                        // Extract actual text content instead of debug-printing
+                        if let Some(text) = c.as_text() {
+                            text.text.clone()
+                        } else {
+                            // For non-text content (images, resources), use debug as fallback
+                            format!("{:?}", c)
+                        }
+                    })
                     .collect();
                 Ok(content.join("\n"))
             }

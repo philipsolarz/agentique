@@ -7,6 +7,7 @@ import type { StepInfo } from "./components/RecursionTree";
 import ArtifactViewer from "./components/ArtifactViewer";
 import type { Artifact } from "./components/ArtifactViewer";
 import SessionSidebar from "./components/SessionSidebar";
+import Settings from "./components/Settings";
 import "./App.css";
 
 interface SessionInfo {
@@ -28,6 +29,7 @@ function App() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4o");
   const [budget, setBudget] = useState("5.00");
+  const [baseUrl, setBaseUrl] = useState("");
   const [creating, setCreating] = useState(false);
 
   const activeBudget =
@@ -67,6 +69,7 @@ function App() {
         apiKey: apiKey.trim(),
         model,
         budget: parseFloat(budget) || 5.0,
+        baseUrl: baseUrl.trim() || null,
       });
       setSessions((prev) => [...prev, info]);
       setActiveSessionId(info.session_id);
@@ -87,6 +90,23 @@ function App() {
         activeSessionId={activeSessionId}
         onSelect={handleSelectSession}
         onDelete={handleDeleteSession}
+        onResume={(info) => {
+          setSessions((prev) => [...prev, info]);
+          setActiveSessionId(info.session_id);
+          setCost(0);
+          setSteps([]);
+          setArtifacts([]);
+        }}
+        onFork={(info) => {
+          setSessions((prev) => [...prev, info]);
+          setActiveSessionId(info.session_id);
+          setCost(0);
+          setSteps([]);
+          setArtifacts([]);
+        }}
+        apiKey={apiKey}
+        model={model}
+        budget={parseFloat(budget) || 5.0}
       />
 
       <div className="main-panel">
@@ -109,31 +129,22 @@ function App() {
         ) : (
           <div className="setup-form">
             <h2>New Session</h2>
-            <label>
-              API Key
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-..."
-              />
-            </label>
-            <label>
-              Model
-              <input
-                type="text"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              />
-            </label>
-            <label>
-              Budget (USD)
-              <input
-                type="text"
-                value={budget}
-                onChange={(e) => setBudget(e.target.value)}
-              />
-            </label>
+            <Settings
+              onSettingsLoaded={(s) => {
+                if (s.api_key) setApiKey(s.api_key);
+                if (s.model) setModel(s.model);
+                if (s.budget) setBudget(String(s.budget));
+                if (s.base_url) setBaseUrl(s.base_url);
+              }}
+              apiKey={apiKey}
+              model={model}
+              budget={budget}
+              baseUrl={baseUrl}
+              onApiKeyChange={setApiKey}
+              onModelChange={setModel}
+              onBudgetChange={setBudget}
+              onBaseUrlChange={setBaseUrl}
+            />
             <button onClick={handleCreateSession} disabled={creating}>
               {creating ? "Creating..." : "Start Session"}
             </button>

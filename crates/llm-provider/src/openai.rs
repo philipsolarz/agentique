@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream, StreamExt};
+use futures::stream::{BoxStream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -14,6 +14,8 @@ pub struct OpenAiProvider {
     client: Client,
     api_key: String,
     default_model: String,
+    base_url: Option<String>,
+    custom_capabilities: Option<ProviderCapabilities>,
 }
 
 impl OpenAiProvider {
@@ -22,11 +24,26 @@ impl OpenAiProvider {
             client: Client::new(),
             api_key: api_key.into(),
             default_model: "gpt-4o".to_string(),
+            base_url: None,
+            custom_capabilities: None,
         }
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.default_model = model.into();
+        self
+    }
+
+    /// Set a custom base URL for OpenAI-compatible endpoints (Ollama, vLLM, LM Studio, etc.).
+    /// The URL should be the full chat completions endpoint, e.g. `http://localhost:11434/v1/chat/completions`.
+    pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = Some(url.into());
+        self
+    }
+
+    /// Override provider capabilities (context window, pricing) for custom endpoints.
+    pub fn with_capabilities(mut self, caps: ProviderCapabilities) -> Self {
+        self.custom_capabilities = Some(caps);
         self
     }
 
@@ -220,9 +237,10 @@ impl CompletionProvider for OpenAiProvider {
 
         debug!(model = %model, messages = request.messages.len(), "Sending completion request");
 
+        let url = self.base_url.as_deref().unwrap_or(OPENAI_API_URL);
         let response = self
             .client
-            .post(OPENAI_API_URL)
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&api_request)
             .send()
@@ -291,9 +309,10 @@ impl CompletionProvider for OpenAiProvider {
 
         debug!(model = %model, messages = request.messages.len(), "Sending streaming request");
 
+        let url = self.base_url.as_deref().unwrap_or(OPENAI_API_URL);
         let response = self
             .client
-            .post(OPENAI_API_URL)
+            .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&api_request)
             .send()
@@ -315,56 +334,21 @@ impl CompletionProvider for OpenAiProvider {
 
         let byte_stream = response.bytes_stream();
 
-        // Parse SSE events from the byte stream
-        let sse_stream = byte_stream
-            .map(|result| match result {
-                Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).to_string()),
-                Err(e) => Err(ProviderError::RequestFailed(e)),
-            })
-            // SSE data can arrive in chunks that span multiple events or partial events.
-            // We accumulate a buffer and split on double-newline boundaries.
-            .scan(String::new(), |buffer, chunk_result| {
-                let chunk = match chunk_result {
-                    Ok(c) => c,
-                    Err(e) => return futures::future::ready(Some(vec![Err(e)])),
-                };
-                buffer.push_str(&chunk);
-
-                let mut events = Vec::new();
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    *buffer = buffer[pos + 2..].to_string();
-
-                    for line in event_text.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            let data = data.trim();
-                            if data == "[DONE]" {
-                                continue;
-                            }
-                            match serde_json::from_str::<StreamingResponse>(data) {
-                                Ok(sr) => {
-                                    if let Some(chunk) = parse_streaming_chunk(sr) {
-                                        events.push(Ok(chunk));
-                                    }
-                                }
-                                Err(e) => {
-                                    events.push(Err(ProviderError::ParseError(format!(
-                                        "SSE parse error: {e}"
-                                    ))));
-                                }
-                            }
-                        }
-                    }
+        let sse_stream = crate::sse::parse_sse_events::<StreamingResponse>(byte_stream)
+            .filter_map(|result| async move {
+                match result {
+                    Err(e) => Some(Err(e)),
+                    Ok(sr) => parse_streaming_chunk(sr).map(Ok),
                 }
-
-                futures::future::ready(Some(events))
-            })
-            .flat_map(stream::iter);
+            });
 
         Ok(sse_stream.boxed())
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
+        if let Some(caps) = &self.custom_capabilities {
+            return caps.clone();
+        }
         ProviderCapabilities {
             supports_streaming: true,
             supports_tool_calling: true,
@@ -375,7 +359,11 @@ impl CompletionProvider for OpenAiProvider {
     }
 
     fn name(&self) -> &str {
-        "openai"
+        if self.base_url.is_some() {
+            "openai-compatible"
+        } else {
+            "openai"
+        }
     }
 }
 

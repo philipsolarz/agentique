@@ -26,6 +26,14 @@ pub enum SessionEventType {
     Compaction,
 }
 
+/// Info about a persisted session on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedSessionInfo {
+    pub session_id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
 /// Manages session persistence to a JSONL file.
 pub struct SessionStore {
     session_id: Uuid,
@@ -106,6 +114,83 @@ impl SessionStore {
         }
     }
 
+    /// Fork this session: create a new session file with the same history.
+    pub async fn fork(&self, base_dir: &Path) -> anyhow::Result<Self> {
+        let new_store = Self::new(base_dir).await?;
+
+        // Copy current session content to the new file
+        if self.path.exists() {
+            tokio::fs::copy(&self.path, &new_store.path).await?;
+        }
+
+        Ok(new_store)
+    }
+
+    /// List all persisted session files in the data directory.
+    /// Returns (session_id, first_user_message, created_timestamp) for each.
+    pub async fn list_persisted(base_dir: &Path) -> anyhow::Result<Vec<PersistedSessionInfo>> {
+        let sessions_dir = base_dir.join("sessions");
+        if !sessions_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = tokio::fs::read_dir(&sessions_dir).await?;
+        let mut sessions = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let session_id = match Uuid::parse_str(file_name) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            // Read first few lines to extract metadata
+            let content = match tokio::fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            let mut name = String::new();
+            let mut created_at = String::new();
+
+            for line in content.lines().take(5) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
+                    if created_at.is_empty() {
+                        created_at = event.timestamp.clone();
+                    }
+                    if matches!(event.event_type, SessionEventType::UserMessage) && name.is_empty()
+                    {
+                        if let Some(content) = event.data.get("content").and_then(|v| v.as_str()) {
+                            name = content.chars().take(60).collect();
+                            if content.len() > 60 {
+                                name.push_str("...");
+                            }
+                        }
+                    }
+                }
+            }
+
+            sessions.push(PersistedSessionInfo {
+                session_id: session_id.to_string(),
+                name,
+                created_at,
+            });
+        }
+
+        // Sort by created_at descending (newest first)
+        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok(sessions)
+    }
+
     /// Replay a session file, returning the conversation messages.
     pub async fn replay(&self) -> anyhow::Result<Vec<Message>> {
         let content = tokio::fs::read_to_string(&self.path).await?;
@@ -183,12 +268,24 @@ pub struct SessionCompressor {
     pub summary_model: String,
 }
 
-impl Default for SessionCompressor {
-    fn default() -> Self {
+impl SessionCompressor {
+    /// Create a new compressor that uses the given model for summarization.
+    pub fn new(summary_model: impl Into<String>) -> Self {
         Self {
             threshold: 0.85,
             keep_recent_exchanges: 4,
-            summary_model: "gpt-4o-mini".to_string(),
+            summary_model: summary_model.into(),
+        }
+    }
+}
+
+impl Default for SessionCompressor {
+    fn default() -> Self {
+        // Default model is empty — will be overridden by the caller's configured model.
+        Self {
+            threshold: 0.85,
+            keep_recent_exchanges: 4,
+            summary_model: String::new(),
         }
     }
 }
@@ -287,8 +384,15 @@ impl SessionCompressor {
              Provide a concise summary (aim for ~25% of original length):"
         );
 
+        // Use configured summary model, falling back to the provider's own model
+        let model = if self.summary_model.is_empty() {
+            provider.name().to_string()
+        } else {
+            self.summary_model.clone()
+        };
+
         let request = CompletionRequest {
-            model: self.summary_model.clone(),
+            model,
             messages: vec![Message::user(&summary_prompt)],
             tools: None,
             temperature: Some(0.0),
@@ -417,6 +521,48 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = SessionStore::resume(dir.path(), Uuid::new_v4()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fork_session_copies_history() {
+        let (dir, store) = make_store().await;
+        store.log_message(&Message::user("hello")).await;
+        store.log_message(&Message::assistant("world")).await;
+
+        let forked = store.fork(dir.path()).await.unwrap();
+        assert_ne!(forked.session_id(), store.session_id());
+
+        let msgs = forked.replay().await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content.as_deref(), Some("hello"));
+        assert_eq!(msgs[1].content.as_deref(), Some("world"));
+
+        // New messages go to the forked file only
+        forked.log_message(&Message::user("forked msg")).await;
+        let forked_msgs = forked.replay().await.unwrap();
+        assert_eq!(forked_msgs.len(), 3);
+        let orig_msgs = store.replay().await.unwrap();
+        assert_eq!(orig_msgs.len(), 2); // original unchanged
+    }
+
+    #[tokio::test]
+    async fn list_persisted_sessions_finds_files() {
+        let dir = TempDir::new().unwrap();
+
+        // Create two sessions with messages
+        let store1 = SessionStore::new(dir.path()).await.unwrap();
+        store1.log_message(&Message::user("first session")).await;
+
+        let store2 = SessionStore::new(dir.path()).await.unwrap();
+        store2.log_message(&Message::user("second session")).await;
+
+        let listed = SessionStore::list_persisted(dir.path()).await.unwrap();
+        assert_eq!(listed.len(), 2);
+
+        // Both session names should be set from first user message
+        let names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"first session"));
+        assert!(names.contains(&"second session"));
     }
 
     // ---- Compressor tests ----

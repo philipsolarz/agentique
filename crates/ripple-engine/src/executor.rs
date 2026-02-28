@@ -166,11 +166,12 @@ impl RippleExecutor {
 
             // Record cost
             let caps = provider.capabilities();
-            let cost_microdollars = ((response.usage.prompt_tokens as f64
-                * caps.cost_per_input_token)
-                + (response.usage.completion_tokens as f64 * caps.cost_per_output_token))
-                * 1_000_000.0;
-            let cost_microdollars = cost_microdollars as u64;
+            let cost_microdollars = observability::compute_cost_microdollars(
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                caps.cost_per_input_token,
+                caps.cost_per_output_token,
+            );
             total_cost += cost_microdollars;
 
             if let Err(e) = budget.record(cost_microdollars) {
@@ -513,10 +514,12 @@ impl RippleExecutor {
 
             let response = provider.complete(request).await?;
             let caps = provider.capabilities();
-            let cost = ((response.usage.prompt_tokens as f64 * caps.cost_per_input_token)
-                + (response.usage.completion_tokens as f64 * caps.cost_per_output_token))
-                * 1_000_000.0;
-            let cost = cost as u64;
+            let cost = observability::compute_cost_microdollars(
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens,
+                caps.cost_per_input_token,
+                caps.cost_per_output_token,
+            );
 
             let _ = budget.record(cost);
             let unused = reserved.saturating_sub(cost);

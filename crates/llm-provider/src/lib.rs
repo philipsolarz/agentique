@@ -3,6 +3,7 @@ pub mod error;
 pub mod openai;
 pub mod retry;
 pub mod router;
+pub mod sse;
 pub mod traits;
 pub mod types;
 

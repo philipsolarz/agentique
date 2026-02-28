@@ -74,10 +74,26 @@ impl BudgetTracker {
         self.spent_microdollars() as f64 / 1_000_000.0
     }
 
+    pub fn ceiling_microdollars(&self) -> u64 {
+        self.ceiling_microdollars
+    }
+
     pub fn remaining_microdollars(&self) -> u64 {
         self.ceiling_microdollars
             .saturating_sub(self.spent_microdollars())
     }
+}
+
+/// Compute cost in microdollars from token counts and per-token prices.
+pub fn compute_cost_microdollars(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cost_per_input_token: f64,
+    cost_per_output_token: f64,
+) -> u64 {
+    let cost_usd = (prompt_tokens as f64 * cost_per_input_token)
+        + (completion_tokens as f64 * cost_per_output_token);
+    (cost_usd * 1_000_000.0) as u64
 }
 
 #[cfg(test)]
