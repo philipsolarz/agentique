@@ -10,7 +10,10 @@ tauri-build = { workspace = true }
 agentique-core = { path = "../crates/agentique-core" }
 llm-provider = { path = "../crates/llm-provider" }
 ripple-engine = { path = "../crates/ripple-engine" }
+mcp-manager = { path = "../crates/mcp-manager" }
+data-layer = { path = "../crates/data-layer" }
 observability = { path = "../crates/observability" }
+tracing = { workspace = true }
 tauri = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use llm_provider::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
+
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolAnnotations {
@@ -48,6 +51,39 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Adapter that wraps an MCP tool (via McpManager) as a local Tool.
+struct McpToolAdapter {
+    namespaced_name: String,
+    description: String,
+    parameters: serde_json::Value,
+    annotations_val: ToolAnnotations,
+    manager: Arc<Mutex<mcp_manager::McpManager>>,
+}
+
+#[async_trait]
+impl Tool for McpToolAdapter {
+    fn name(&self) -> &str {
+        &self.namespaced_name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.parameters.clone()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.annotations_val.clone()
+    }
+
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, String> {
+        let mgr = self.manager.lock().await;
+        mgr.dispatch(&self.namespaced_name, arguments).await
+    }
+}
+
 pub struct ToolRouter {
     tools: HashMap<String, Box<dyn Tool>>,
 }
@@ -61,6 +97,29 @@ impl ToolRouter {
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
+    }
+
+    /// Register all tools from a connected MCP manager.
+    ///
+    /// Each MCP tool is wrapped in an adapter that routes calls through the
+    /// manager. Tool names are namespaced as `{server}:{tool}`.
+    pub fn register_mcp_tools(&mut self, manager: Arc<Mutex<mcp_manager::McpManager>>, tool_defs: Vec<ToolDefinition>) {
+        for def in tool_defs {
+            let namespaced_name = def.function.name.clone();
+            let adapter = McpToolAdapter {
+                namespaced_name: namespaced_name.clone(),
+                description: def.function.description.clone(),
+                parameters: def.function.parameters.clone(),
+                annotations_val: ToolAnnotations {
+                    // MCP tools default to not read-only / not destructive.
+                    // The MCP permission manager handles approval policy separately.
+                    read_only_hint: false,
+                    destructive_hint: false,
+                },
+                manager: Arc::clone(&manager),
+            };
+            self.tools.insert(namespaced_name, Box::new(adapter));
+        }
     }
 
     pub async fn dispatch(&self, name: &str, arguments: serde_json::Value) -> ToolResult {
@@ -92,6 +151,16 @@ impl ToolRouter {
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|t| t.tool_definition()).collect()
+    }
+
+    /// Get annotations for a tool by name.
+    pub fn annotations(&self, name: &str) -> Option<ToolAnnotations> {
+        self.tools.get(name).map(|t| t.annotations())
+    }
+
+    /// Check if a tool name is an MCP tool (contains ':' namespace separator).
+    pub fn is_mcp_tool(&self, name: &str) -> bool {
+        name.contains(':') && self.tools.contains_key(name)
     }
 }
 
@@ -188,5 +257,12 @@ mod tests {
         let annotations = ToolAnnotations::default();
         assert!(!annotations.read_only_hint);
         assert!(!annotations.destructive_hint);
+    }
+
+    #[test]
+    fn is_mcp_tool_detection() {
+        let router = ToolRouter::new();
+        assert!(!router.is_mcp_tool("file_read"));
+        assert!(!router.is_mcp_tool("github:list_repos")); // not registered
     }
 }

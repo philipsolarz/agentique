@@ -7,7 +7,7 @@ use agentique_core::tools::{
     ReplLoadFileTool, ReplSearchTool, ReplSetTool, ReplSliceTool,
 };
 use agentique_core::{AgentLoop, AgentStreamEvent, SessionStore, ToolRouter};
-use llm_provider::{OpenAiProvider, RetryProvider};
+use llm_provider::{AnthropicProvider, CompletionProvider, OpenAiProvider, RetryProvider};
 use observability::BudgetTracker;
 use ripple_engine::ReplSession;
 use tokio::sync::Mutex;
@@ -30,13 +30,31 @@ Use 'final_' prefix on variable names to mark terminal outputs (e.g., 'final_ans
 
 Always explain what you're doing and present results clearly."#;
 
+/// Create a provider based on the model name and available API keys.
+/// Models starting with "claude" or "anthropic/" use Anthropic; everything else uses OpenAI.
+fn create_provider(model: &str) -> anyhow::Result<Box<dyn CompletionProvider>> {
+    let is_anthropic = model.starts_with("claude") || model.starts_with("anthropic/");
+
+    if is_anthropic {
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            anyhow::anyhow!(
+                "ANTHROPIC_API_KEY environment variable is required for model '{model}'"
+            )
+        })?;
+        let provider = AnthropicProvider::new(api_key).with_model(model);
+        Ok(Box::new(RetryProvider::with_defaults(Box::new(provider))))
+    } else {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            anyhow::anyhow!("OPENAI_API_KEY environment variable is required for model '{model}'")
+        })?;
+        let provider = OpenAiProvider::new(api_key).with_model(model);
+        Ok(Box::new(RetryProvider::with_defaults(Box::new(provider))))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     observability::init_tracing();
-
-    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
-        anyhow::anyhow!("OPENAI_API_KEY environment variable is required")
-    })?;
 
     let model = std::env::var("AGENTIQUE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let budget_dollars: f64 = std::env::var("AGENTIQUE_BUDGET")
@@ -46,12 +64,9 @@ async fn main() -> anyhow::Result<()> {
 
     let home_dir = std::env::var("AGENTIQUE_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_home().join(".agentique")
-        });
+        .unwrap_or_else(|_| dirs_home().join(".agentique"));
 
-    let openai = OpenAiProvider::new(api_key).with_model(&model);
-    let provider = RetryProvider::with_defaults(Box::new(openai));
+    let provider = create_provider(&model)?;
     let budget = Arc::new(BudgetTracker::with_dollar_ceiling(budget_dollars));
     let repl_session = Arc::new(Mutex::new(ReplSession::new()));
 
@@ -71,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let session_id = session_store.session_id();
 
     let mut agent = AgentLoop::new(
-        Box::new(provider),
+        provider,
         router,
         SYSTEM_PROMPT,
         &model,
@@ -127,9 +142,8 @@ async fn main() -> anyhow::Result<()> {
             .await
         {
             Ok(response) => {
-                // Response already printed via streaming tokens
                 println!("[cost so far: ${:.4}]\n", agent.spent_dollars());
-                let _ = response; // already displayed
+                let _ = response;
             }
             Err(err) => {
                 eprintln!("\nError: {err}\n");

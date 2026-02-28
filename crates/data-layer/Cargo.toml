@@ -4,3 +4,29 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Tree-sitter for AST parsing
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+
+# Tantivy for full-text search
+tantivy = "0.22"
+
+# Petgraph for dependency graphs
+petgraph = "0.7"
+
+# File watching
+notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
+walkdir = "2"
+
+# Common
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

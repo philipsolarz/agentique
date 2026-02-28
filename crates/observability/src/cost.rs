@@ -44,6 +44,11 @@ impl BudgetTracker {
         Self::new((dollars * 1_000_000.0) as u64)
     }
 
+    /// Create a tracker with a ceiling in microdollars.
+    pub fn with_microdollar_ceiling(microdollars: u64) -> Self {
+        Self::new(microdollars)
+    }
+
     /// Record a cost. Returns error if the budget ceiling would be exceeded.
     pub fn record(&self, cost_microdollars: u64) -> Result<u64, BudgetError> {
         let new_total = self

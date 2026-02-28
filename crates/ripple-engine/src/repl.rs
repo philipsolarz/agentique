@@ -188,6 +188,11 @@ impl ReplSession {
         Ok(meta.char_count)
     }
 
+    /// Get all variable names in the session.
+    pub fn variable_names(&self) -> Vec<String> {
+        self.variables.keys().cloned().collect()
+    }
+
     pub fn format_state_summary(&self) -> String {
         if self.variables.is_empty() {
             return "REPL state: (empty)".to_string();

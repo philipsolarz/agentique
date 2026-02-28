@@ -1,5 +1,7 @@
+pub mod code_search;
 pub mod file_read;
 pub mod file_write;
+pub mod find_related;
 pub mod list_files;
 pub mod repl_chunks;
 pub mod repl_get;
@@ -9,8 +11,10 @@ pub mod repl_search;
 pub mod repl_set;
 pub mod repl_slice;
 
+pub use code_search::CodeSearchTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
+pub use find_related::FindRelatedTool;
 pub use list_files::ListFilesTool;
 pub use repl_chunks::ReplChunksTool;
 pub use repl_get::ReplGetTool;
