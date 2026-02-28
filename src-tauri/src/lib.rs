@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agentique_core::{AgentEvent, AgentOp, PersistedSessionInfo, SessionBuilder, SessionStore};
+use agentique_core::session::{SessionEvent, SessionEventType};
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, State};
 use tokio::sync::{mpsc, Mutex};
@@ -45,6 +46,7 @@ pub enum StreamEvent {
         new_content: String,
     },
     AssistantMessage(String),
+    ModelSwitched(String),
     Error(String),
     CostUpdate(f64),
 }
@@ -59,6 +61,9 @@ struct AgentSession {
     name: String,
     created_at: String,
     mcp_servers: Vec<String>,
+    system_prompt: String,
+    api_key: String,
+    base_url: Option<String>,
 }
 
 /// App-level state holding all active sessions.
@@ -122,6 +127,9 @@ async fn create_session(
         name: String::new(),
         created_at: info.created_at.clone(),
         mcp_servers,
+        system_prompt: String::new(),
+        api_key: api_key.clone(),
+        base_url,
     };
 
     state.sessions.lock().await.insert(session_id, session);
@@ -197,6 +205,7 @@ async fn send_message(
                         new_content,
                     },
                     AgentEvent::TaskComplete(result) => StreamEvent::AssistantMessage(result),
+                    AgentEvent::ModelSwitched(m) => StreamEvent::ModelSwitched(m),
                     AgentEvent::Error(e) => StreamEvent::Error(e),
                     AgentEvent::StepProgress {
                         step,
@@ -324,6 +333,9 @@ async fn resume_session(
         name: String::from("[resumed]"),
         created_at: info.created_at.clone(),
         mcp_servers,
+        system_prompt: String::new(),
+        api_key,
+        base_url: None,
     };
 
     state.sessions.lock().await.insert(sid, session);
@@ -381,6 +393,9 @@ async fn fork_session(
         name: String::from("[forked]"),
         created_at: info.created_at.clone(),
         mcp_servers,
+        system_prompt: String::new(),
+        api_key,
+        base_url: None,
     };
 
     state.sessions.lock().await.insert(sid, session);
@@ -451,6 +466,155 @@ async fn delete_session(
     Ok(())
 }
 
+#[tauri::command]
+async fn update_system_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+    prompt: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.lock().await;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+
+    session
+        .op_tx
+        .send(AgentOp::UpdateSystemPrompt(prompt))
+        .await
+        .map_err(|e| format!("Agent loop closed: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_system_prompt(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let sessions = state.sessions.lock().await;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    Ok(session.system_prompt.clone())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PromptTemplate {
+    name: String,
+    content: String,
+}
+
+#[tauri::command]
+async fn list_prompt_templates() -> Result<Vec<PromptTemplate>, String> {
+    Ok(agentique_core::list_prompt_templates()
+        .into_iter()
+        .map(|(name, content)| PromptTemplate {
+            name: name.to_string(),
+            content: content.to_string(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn switch_model(
+    state: State<'_, AppState>,
+    session_id: String,
+    model: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().await;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+
+    let key = api_key.unwrap_or_else(|| session.api_key.clone());
+    let url = base_url.or_else(|| session.base_url.clone());
+
+    session
+        .op_tx
+        .send(AgentOp::SwitchModel {
+            model: model.clone(),
+            api_key: key,
+            base_url: url,
+        })
+        .await
+        .map_err(|e| format!("Agent loop closed: {e}"))?;
+
+    session.model = model;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn export_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+    format: String,
+) -> Result<String, String> {
+    let sid = uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let store = SessionStore::resume(&state.data_dir, sid)
+        .await
+        .map_err(|e| e.to_string())?;
+    let events = store.read_events().await.map_err(|e| e.to_string())?;
+
+    match format.as_str() {
+        "json" => serde_json::to_string_pretty(&events).map_err(|e| e.to_string()),
+        "markdown" | _ => Ok(events_to_markdown(&events)),
+    }
+}
+
+fn events_to_markdown(events: &[SessionEvent]) -> String {
+    let mut md = String::from("# Agentique Conversation\n\n");
+
+    for event in events {
+        let time = &event.timestamp;
+        match &event.event_type {
+            SessionEventType::UserMessage => {
+                let content = event.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                md.push_str(&format!("## User\n*{time}*\n\n{content}\n\n"));
+            }
+            SessionEventType::AssistantMessage => {
+                let content = event.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                md.push_str(&format!("## Assistant\n*{time}*\n\n{content}\n\n"));
+            }
+            SessionEventType::ToolCall => {
+                if let Some(tool_calls) = event.data.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tc in tool_calls {
+                        let name = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+                        let args = tc.get("function")
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|a| a.as_str())
+                            .unwrap_or("{}");
+                        md.push_str(&format!(
+                            "<details>\n<summary>Tool call: {name}</summary>\n\n```json\n{args}\n```\n\n</details>\n\n"
+                        ));
+                    }
+                }
+            }
+            SessionEventType::ToolResult => {
+                let content = event.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let preview: String = content.chars().take(500).collect();
+                md.push_str(&format!(
+                    "<details>\n<summary>Tool result</summary>\n\n```\n{preview}\n```\n\n</details>\n\n"
+                ));
+            }
+            SessionEventType::SystemMessage => {
+                let content = event.data.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                md.push_str(&format!("---\n*System: {content}*\n\n"));
+            }
+            SessionEventType::Compaction => {
+                md.push_str("---\n*[Conversation compacted]*\n\n");
+            }
+        }
+    }
+
+    md
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let data_dir = std::env::var("AGENTIQUE_HOME")
@@ -475,6 +639,11 @@ pub fn run() {
             delete_session,
             load_settings,
             save_settings,
+            export_conversation,
+            update_system_prompt,
+            get_system_prompt,
+            list_prompt_templates,
+            switch_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Agentique");

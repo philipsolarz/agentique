@@ -17,6 +17,7 @@ interface ChatMessage {
   content: string;
   timestamp: string;
   toolCalls?: ToolCallInfo[];
+  model?: string;
 }
 
 interface ToolApproval {
@@ -53,6 +54,7 @@ type StreamEvent =
     };
   }
   | { type: "AssistantMessage"; data: string }
+  | { type: "ModelSwitched"; data: string }
   | { type: "Error"; data: string }
   | { type: "CostUpdate"; data: number };
 
@@ -61,6 +63,8 @@ interface Props {
   onCostUpdate: (cost: number) => void;
   onStepProgress: (step: StepInfo) => void;
   onArtifact: (artifact: Artifact) => void;
+  onSendingChange?: (sending: boolean) => void;
+  onModelSwitched?: (model: string) => void;
 }
 
 function MarkdownContent({ content }: { content: string }) {
@@ -199,7 +203,7 @@ function ThinkingIndicator() {
   );
 }
 
-function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Props) {
+function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact, onSendingChange, onModelSwitched }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -207,6 +211,8 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
   const [thinking, setThinking] = useState(false);
   const [pendingApproval, setPendingApproval] = useState<ToolApproval | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_currentModel, setCurrentModel] = useState<string | undefined>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -234,6 +240,7 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setSending(true);
+    onSendingChange?.(true);
     setStreamingContent("");
     setActiveToolCalls([]);
     setThinking(true);
@@ -262,15 +269,19 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
         setThinking(false);
         setActiveToolCalls((prevTools) => {
           const tools = prevTools.length > 0 ? [...prevTools] : undefined;
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content: event.data,
-              timestamp: new Date().toISOString(),
-              toolCalls: tools,
-            },
-          ]);
+          setCurrentModel((curModel) => {
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: "assistant",
+                content: event.data,
+                timestamp: new Date().toISOString(),
+                toolCalls: tools,
+                model: curModel,
+              },
+            ]);
+            return curModel;
+          });
           return [];
         });
       } else if (event.type === "Error") {
@@ -285,7 +296,13 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
             timestamp: new Date().toISOString(),
           },
         ]);
+      } else if (event.type === "ModelSwitched") {
+        setCurrentModel(event.data);
+        onModelSwitched?.(event.data);
       } else if (event.type === "StepProgress") {
+        if (event.data.model) {
+          setCurrentModel(event.data.model);
+        }
         onStepProgress({
           step: event.data.step,
           state: event.data.state,
@@ -325,6 +342,7 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
       ]);
     } finally {
       setSending(false);
+      onSendingChange?.(false);
       setThinking(false);
       setPendingApproval(null);
     }
@@ -342,6 +360,9 @@ function ChatPanel({ sessionId, onCostUpdate, onStepProgress, onArtifact }: Prop
       <div className="messages">
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
+            {msg.model && msg.role === "assistant" && (
+              <span className="model-badge">{msg.model}</span>
+            )}
             {msg.toolCalls && msg.toolCalls.length > 0 && (
               <ToolCallsDisplay toolCalls={msg.toolCalls} collapsed={true} />
             )}

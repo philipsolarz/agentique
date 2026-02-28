@@ -8,6 +8,8 @@ import ArtifactViewer from "./components/ArtifactViewer";
 import type { Artifact } from "./components/ArtifactViewer";
 import SessionSidebar from "./components/SessionSidebar";
 import Settings from "./components/Settings";
+import SystemPromptEditor from "./components/SystemPromptEditor";
+import ModelSelector from "./components/ModelSelector";
 import "./App.css";
 
 interface SessionInfo {
@@ -32,6 +34,10 @@ function App() {
   const [baseUrl, setBaseUrl] = useState("");
   const [creating, setCreating] = useState(false);
 
+  const [exporting, setExporting] = useState(false);
+  const [currentModel, setCurrentModel] = useState(model);
+  const [isSending, setIsSending] = useState(false);
+
   const activeBudget =
     sessions.find((s) => s.session_id === activeSessionId)?.budget ??
     (parseFloat(budget) || 5.0);
@@ -43,6 +49,29 @@ function App() {
   const handleArtifact = useCallback((artifact: Artifact) => {
     setArtifacts((prev) => [...prev, artifact]);
   }, []);
+
+  async function handleExport(format: "markdown" | "json") {
+    if (!activeSessionId || exporting) return;
+    setExporting(true);
+    try {
+      const content = await invoke<string>("export_conversation", {
+        sessionId: activeSessionId,
+        format,
+      });
+      const ext = format === "json" ? "json" : "md";
+      const blob = new Blob([content], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `agentique-${activeSessionId.slice(0, 8)}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Export failed:", e);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function handleSelectSession(sessionId: string) {
     setActiveSessionId(sessionId);
@@ -73,6 +102,7 @@ function App() {
       });
       setSessions((prev) => [...prev, info]);
       setActiveSessionId(info.session_id);
+      setCurrentModel(info.model);
       setCost(0);
       setSteps([]);
       setArtifacts([]);
@@ -112,11 +142,32 @@ function App() {
       <div className="main-panel">
         <header className="top-bar">
           <h1>Agentique</h1>
-          <CostDisplay cost={cost} budget={activeBudget} steps={steps} />
+          <div className="header-actions">
+            {activeSessionId && (
+              <>
+                <ModelSelector
+                  sessionId={activeSessionId}
+                  currentModel={currentModel}
+                  disabled={isSending}
+                  onModelSwitched={setCurrentModel}
+                />
+                <div className="export-buttons">
+                  <button className="btn-export" onClick={() => handleExport("markdown")} disabled={exporting}>
+                    Export MD
+                  </button>
+                  <button className="btn-export" onClick={() => handleExport("json")} disabled={exporting}>
+                    Export JSON
+                  </button>
+                </div>
+              </>
+            )}
+            <CostDisplay cost={cost} budget={activeBudget} steps={steps} />
+          </div>
         </header>
 
         {activeSessionId ? (
           <>
+            <SystemPromptEditor sessionId={activeSessionId} />
             <RecursionTree steps={steps} />
             <ArtifactViewer artifacts={artifacts} />
             <ChatPanel
@@ -124,6 +175,8 @@ function App() {
               onCostUpdate={setCost}
               onStepProgress={handleStepProgress}
               onArtifact={handleArtifact}
+              onSendingChange={setIsSending}
+              onModelSwitched={setCurrentModel}
             />
           </>
         ) : (

@@ -53,6 +53,14 @@ pub enum AgentOp {
         /// If true, auto-approve this tool for the rest of the session.
         remember_session: bool,
     },
+    /// Update the system prompt mid-session.
+    UpdateSystemPrompt(String),
+    /// Switch the LLM model mid-session.
+    SwitchModel {
+        model: String,
+        api_key: String,
+        base_url: Option<String>,
+    },
 }
 
 /// Events emitted *from* the agent loop (to UI / CLI).
@@ -83,6 +91,7 @@ pub enum AgentEvent {
         new_content: String,
     },
     TaskComplete(String),
+    ModelSwitched(String),
     Error(String),
 }
 
@@ -313,6 +322,32 @@ impl AgentLoop {
                 }
                 AgentOp::ExecApproval { .. } => {
                     // Spurious approval when not awaiting — ignore.
+                }
+                AgentOp::UpdateSystemPrompt(prompt) => {
+                    // Replace the system message (always at index 0).
+                    if !self.conversation.is_empty()
+                        && self.conversation[0].role == llm_provider::Role::System
+                    {
+                        self.conversation[0] = Message::system(&prompt);
+                    } else {
+                        self.conversation.insert(0, Message::system(&prompt));
+                    }
+                    // Persist the new system message.
+                    let sys_msg = Message::system(&prompt);
+                    self.persist(&sys_msg).await;
+                    info!("System prompt updated");
+                }
+                AgentOp::SwitchModel { model, api_key, base_url } => {
+                    let provider = crate::builder::create_provider(
+                        &model,
+                        &api_key,
+                        base_url.as_deref(),
+                    );
+                    self.provider = provider;
+                    self.compressor = SessionCompressor::new(&model);
+                    self.model = model.clone();
+                    info!(model = %model, "Model switched");
+                    let _ = event_tx.send(AgentEvent::ModelSwitched(model)).await;
                 }
             }
         }

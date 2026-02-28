@@ -191,16 +191,28 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    /// Replay a session file, returning the conversation messages.
-    pub async fn replay(&self) -> anyhow::Result<Vec<Message>> {
+    /// Read all session events from the JSONL file.
+    pub async fn read_events(&self) -> anyhow::Result<Vec<SessionEvent>> {
         let content = tokio::fs::read_to_string(&self.path).await?;
-        let mut messages = Vec::new();
+        let mut events = Vec::new();
 
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
             }
             let event: SessionEvent = serde_json::from_str(line)?;
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
+    /// Replay a session file, returning the conversation messages.
+    pub async fn replay(&self) -> anyhow::Result<Vec<Message>> {
+        let events = self.read_events().await?;
+        let mut messages = Vec::new();
+
+        for event in events {
             if let Ok(msg) = serde_json::from_value::<Message>(event.data) {
                 messages.push(msg);
             }
