@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agentique.code import Artifact, Coordinator
-from agentique.console.agents import build_orchestrator, build_planner
+from agentique import Artifact, Coordinator
+from agentique.console.agents import build_orchestrator
+from agentique.console.fleet import build_fleet
 from agentique.core import (
     Agent,
     Blocked,
@@ -28,6 +29,7 @@ from agentique.core import (
     Runtime,
     TextBlock,
 )
+from agentique.tools import Workspace
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,13 +126,30 @@ class Console:
         return await self._coordinator.store.artifacts()
 
 
-def build_console(model: Model, *, planner_model: Model | None = None) -> Console:
-    """Wire a Console with one orchestrator and a file-reading planner.
+def build_console(
+    model: Model,
+    *,
+    fleet_model: Model | None = None,
+    workspace_root: str = "workspace",
+    max_turns: int = 40,
+    specialist_max_turns: int = 24,
+) -> Console:
+    """Wire a Console with the orchestrator and the fleet over a shared workspace.
 
-    ``planner_model`` defaults to ``model``; pass a separate one (e.g. a distinct
-    ``StubModel``) to script the orchestrator and planner independently in tests.
+    The fleet's file tools are confined to ``workspace_root``. ``fleet_model``
+    defaults to ``model``; pass a separate one (e.g. a distinct ``StubModel``) to
+    script the orchestrator and the specialists independently in tests. The turn
+    limits are generous: the orchestrator's run is threaded across the whole
+    conversation (``max_turns``), while each dispatched specialist gets its own
+    ``specialist_max_turns`` budget for its act-and-verify loop.
     """
-    coordinator = Coordinator()
-    planner = build_planner(planner_model if planner_model is not None else model)
-    orchestrator = build_orchestrator(model, coordinator, planner)
-    return Console(orchestrator, coordinator=coordinator)
+    workspace = Workspace(workspace_root)
+    coordinator = Coordinator(runtime=Runtime(max_turns=specialist_max_turns))
+    for role in build_fleet(
+        fleet_model if fleet_model is not None else model, workspace
+    ):
+        coordinator.register_role(role)
+    orchestrator = build_orchestrator(model, coordinator)
+    return Console(
+        orchestrator, coordinator=coordinator, runtime=Runtime(max_turns=max_turns)
+    )

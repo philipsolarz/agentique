@@ -47,8 +47,12 @@ def _build_console() -> Console:
 
 async def _converse(console: Console) -> None:
     print(
-        "agentique console — type a message; /artifacts, /approve <id>, "
-        "/reject <id>, /quit"
+        "agentique console — the orchestrator dispatches a fleet (planner, "
+        "explorer, builder, reviewer)."
+    )
+    print(
+        "type a message; /artifacts, /approve <id>, /reject <id>, /quit. "
+        "Built files land under ./workspace/."
     )
     while not console.done:
         try:

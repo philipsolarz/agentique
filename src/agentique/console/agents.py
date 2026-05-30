@@ -1,110 +1,60 @@
-"""The console's concrete agents: a conversational orchestrator and a file-reading
-planner specialist, plus the ``plan_file`` tool that dispatches the planner and
-lands its output as a proposed artifact.
+"""The orchestrator: the conversational agent that drives the fleet.
 
-These are *application* choices — a "plan" is a domain concept — which is why they
-live in the console layer, not in the generic harness.
+It interprets the operator's intent and **acts** — dispatching the right
+specialist(s) via the generic ``dispatch`` tool and narrating what happened —
+rather than reflexively asking what to do. It yields control back to the operator
+with ``ask_human`` only after acting, or when it genuinely needs a decision.
+
+The orchestrator is an *application* choice (the fleet's roles are domain
+concepts), which is why it lives in the console layer over the generic harness.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
-from agentique.code import Coordinator
+from agentique import Coordinator
+from agentique.console.dispatch import Dispatch
 from agentique.core import Agent, Model
-from agentique.core.tool import ToolResult, ToolSpec
-from agentique.tools import AskHuman, ReadFile
-
-_PLANNER_INSTRUCTIONS = (
-    "You are a planning specialist. Read the file you are given with the read_file "
-    "tool, then reply with a concise, actionable, numbered plan based on its "
-    "contents. Do not ask questions; produce the plan directly."
-)
+from agentique.tools import AskHuman
 
 _ORCHESTRATOR_INSTRUCTIONS = (
-    "You are the orchestrator of a small coding-assistant console, talking with a "
-    "human operator.\n"
-    "- When the operator wants a plan for a file, call the plan_file tool with the "
-    "file path. It runs a planner sub-agent that reads the file and stores a "
-    "proposed plan artifact; tell the operator the artifact id so they can approve "
-    "or reject it.\n"
-    "- To get the operator's next message or decision, call the ask_human tool with "
-    "your question. Always end your turn by calling ask_human (by itself) so the "
-    "operator can reply — never finish silently.\n"
-    "- Keep replies short."
+    "You are the orchestrator of a coding-assistant console (think Claude Code), "
+    "talking with a human operator. You coordinate a fleet of specialists and you "
+    "ACT: you make progress with your tools and narrate what you did, rather than "
+    "just asking what to do.\n"
+    "\n"
+    "Your `dispatch` tool runs a specialist by role on a task. It returns the id of "
+    "a *proposed* artifact the specialist produced. The operator promotes artifacts "
+    "themselves with /approve and /reject — you never approve anything. The roles:\n"
+    "- planner: turns intent into a concise plan (a 'plan' artifact).\n"
+    "- explorer: read-only investigation; reports findings.\n"
+    "- builder: writes the actual code into the workspace and self-verifies "
+    "(a 'change' artifact). This is the do-er that makes things.\n"
+    "- reviewer: read-only review of what the builder produced (a 'review').\n"
+    "\n"
+    "How to work:\n"
+    "- Do first, ask rarely. When the operator states a goal, dispatch the right "
+    "specialist immediately and report the result — do not ask permission for "
+    "obvious next steps.\n"
+    "- A typical build request: dispatch the planner, tell the operator the plan "
+    "artifact id and that they can approve it; once they tell you to proceed, "
+    "dispatch the builder; then offer the reviewer.\n"
+    "- Call ask_human (by itself) to hand control back to the operator after you "
+    "have acted, or when you genuinely need their decision or are blocked. Do not "
+    "finish a turn silently while there is more for the operator to weigh in on. "
+    "Keep replies short."
 )
 
 
-class PlanFile:
-    """Dispatch the planner sub-agent on a file; land its plan as an artifact.
+def build_orchestrator(model: Model, coordinator: Coordinator) -> Agent:
+    """The conversational orchestrator: dispatches the fleet, yields via ask_human.
 
-    Synchronous agents-as-tools: it runs the planner via the Coordinator (so the
-    plan is stored as a ``proposed`` artifact and the run is a tracked Session),
-    then returns an acknowledgement — the artifact id and a preview — into the
-    orchestrator's turn.
+    It holds the generic ``dispatch`` tool (over the Coordinator's registered
+    roles) and ``ask_human``. Register the fleet's roles on ``coordinator`` before
+    or after building — ``Dispatch`` reads the role list dynamically.
     """
-
-    def __init__(self, planner: Agent, coordinator: Coordinator) -> None:
-        self._planner = planner
-        self._coordinator = coordinator
-
-    @property
-    def spec(self) -> ToolSpec:
-        return ToolSpec(
-            name="plan_file",
-            description=(
-                "Dispatch a planner sub-agent to read a file and produce a plan, "
-                "stored as a proposed artifact for the operator to approve."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path of the file to plan around.",
-                    }
-                },
-                "required": ["path"],
-            },
-        )
-
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
-        path = arguments.get("path")
-        if not isinstance(path, str):
-            return ToolResult(content="argument 'path' must be a string", is_error=True)
-        prompt = f"Read the file at {path!r} and produce a concise plan."
-        session = await self._coordinator.dispatch(self._planner, prompt, kind="plan")
-        if session.state != "done" or session.artifact is None:
-            detail = session.error or session.state
-            return ToolResult(
-                content=f"the planner did not produce a plan ({detail})",
-                is_error=True,
-            )
-        artifact = session.artifact
-        return ToolResult(
-            content=(
-                f"Stored a proposed plan as artifact {artifact.id} (from {path}). "
-                f"The operator can approve or reject it.\n\n{artifact.payload[:240]}"
-            )
-        )
-
-
-def build_planner(model: Model) -> Agent:
-    """A specialist that reads a file and returns a plan."""
-    return Agent(
-        name="planner",
-        instructions=_PLANNER_INSTRUCTIONS,
-        model=model,
-        tools=(ReadFile(),),
-    )
-
-
-def build_orchestrator(model: Model, coordinator: Coordinator, planner: Agent) -> Agent:
-    """The conversational orchestrator: talks to the operator, dispatches the
-    planner via ``plan_file``, and pauses for input via ``ask_human``."""
     return Agent(
         name="orchestrator",
         instructions=_ORCHESTRATOR_INSTRUCTIONS,
         model=model,
-        tools=(AskHuman(), PlanFile(planner, coordinator)),
+        tools=(Dispatch(coordinator), AskHuman()),
     )

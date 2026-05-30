@@ -77,10 +77,10 @@ _FORBIDDEN_LAYER_IMPORTS = {
 def _imported_agentique_subpackages(tree: ast.Module) -> set[str]:
     """Second-level names of absolute ``agentique.<name>`` imports in ``tree``.
 
-    ``import agentique.code.x`` and ``from agentique.code.x import y`` both yield
-    ``code``. Relative imports (``level > 0``) stay within their own package, so
-    they can never reach a *different* layer and are ignored, matching the
-    third-party check above.
+    ``import agentique.coordinator`` and ``from agentique.coordinator import y``
+    both yield ``coordinator``. Relative imports (``level > 0``) stay within their
+    own package, so they can never reach a *different* layer and are ignored,
+    matching the third-party check above.
     """
     subpackages: set[str] = set()
     for node in ast.walk(tree):

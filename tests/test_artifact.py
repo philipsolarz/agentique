@@ -1,6 +1,6 @@
 """Artifact: defaults to ``proposed`` and transitions are pure (return copies)."""
 
-from agentique.code import Artifact
+from agentique import Artifact
 
 
 def test_artifact_defaults_to_proposed() -> None:
@@ -13,4 +13,12 @@ def test_approve_and_reject_return_new_values() -> None:
     assert artifact.approved().status == "approved"
     assert artifact.rejected().status == "rejected"
     # the original is untouched — Artifact is a frozen value.
+    assert artifact.status == "proposed"
+
+
+def test_with_status_accepts_application_defined_states() -> None:
+    artifact = Artifact(id="a1", kind="change", payload="diff")
+    # the lifecycle is application-defined, not a fixed set.
+    advanced = artifact.with_status("executing").with_status("done")
+    assert advanced.status == "done"
     assert artifact.status == "proposed"

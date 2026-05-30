@@ -19,21 +19,23 @@ pip install "agentique[anthropic]"  # adds the official `anthropic` SDK for agen
 | Import | What it provides | Third-party deps |
 |---|---|---|
 | `agentique.core` | Seam Protocols (`Model`, `Tool`, `Memory`), value types, the `Result` union, and the `Runtime` engine | — |
-| `agentique.tools` | Real `Tool`s: `ReadFile`, `Delegate` (multi-agent), `AskHuman` (pause for input) | — |
+| `agentique.tools` | Real `Tool`s: `ReadFile`, `ListDir`, `WriteFile`, `EditFile`, `RunCommand` (confined to a `Workspace`), `Delegate` (multi-agent), `AskHuman` (pause for input) | — |
 | `agentique.memory` | Durable `Memory`: `InMemoryStore`, `FileStore` | — |
 | `agentique.testing` | Offline test doubles: `StubModel`, `EchoTool` | — |
 | `agentique.anthropic` | `AnthropicModel` over the Anthropic Messages API | `anthropic` (via the `anthropic` extra) |
 
-Two further subpackages express the layering the framework is built around —
-`console → code → core` (the application talks to a human, the harness coordinates
-agents, the core is the generic framework):
+Two further layers express the structure the framework is built around —
+`console → harness → core` (the application talks to a human, the harness
+coordinates agents, the core is the generic framework). The **harness is the
+`agentique` root itself** — `agentique` *is* an agent harness built on top of
+`agentique.core`:
 
 | Import | What it provides | Third-party deps |
 |---|---|---|
-| `agentique.code` | Generic, domain-agnostic harness: `Coordinator`, `Session`, `Artifact`, shared `Store` | — |
+| `agentique` (root) | Generic, domain-agnostic harness: `Coordinator` (dispatch, dispatch-by-`Role`, artifact promotion), `Role`, `Session`, `Artifact`, shared `Store` — `from agentique import …` | — |
 | `agentique.console` | The human-facing application: `Console` + the `agentique` CLI REPL | — |
 
-`agentique.code` is deliberately generic and carries **no** domain specifics (no
+The `agentique` harness is deliberately generic and carries **no** domain specifics (no
 repos, git, diffs, or PRs); what the artifacts it coordinates *mean* is the
 application's concern. `agentique.console` is the only layer that talks to a human.
 
@@ -62,6 +64,19 @@ permission-gated by the `Runtime`.
 
 - **`ReadFile()`** — read the UTF-8 text contents of a file (read-only; failures
   returned as error results, not raised).
+- **`Workspace(root)`** — a confined root directory. Not a `Tool` itself: the
+  tools below hold one and resolve every path against it, rejecting absolute paths
+  and `..` escapes, and pin commands to it. The jail lives in one place.
+- **`ListDir(workspace)`** — list a directory's entries within the workspace
+  (read-only).
+- **`WriteFile(workspace)`** — write/overwrite a file within the workspace
+  (creating parent dirs). World-changing, so confined.
+- **`EditFile(workspace)`** — replace the sole occurrence of a string in a
+  workspace file; errors on zero or ambiguous matches so the model can retry.
+- **`RunCommand(workspace, *, allowlist=…, timeout=30, output_limit=16384)`** —
+  run an allowlisted, shell-free `argv` command confined to the workspace root,
+  with a timeout and capped output. The most bounded tool; a non-zero exit is an
+  error result.
 - **`Delegate(child, *, name, description, runtime=None)`** — expose a child
   `Agent` as a tool the parent may invoke. Pure mechanism for multi-agent
   topologies: it carries no orchestration logic, and is gated by the parent's
@@ -108,10 +123,15 @@ model = AnthropicModel("<current-model-id>")  # id is environment-specific
 
 The application layer — a conversational console you can run.
 
-- **`Console`** / **`build_console(model)`** — wires a conversational orchestrator
-  agent (holding `ask_human` and a `plan_file` tool) over a `Coordinator`. `send()`
-  threads the conversation across turns via the pause/resume spine; `approve` /
-  `reject` drive an artifact's lifecycle.
+- **`Console`** / **`build_console(model, *, fleet_model=None, workspace_root="workspace")`**
+  — wires a conversational orchestrator over a `Coordinator` and registers the
+  **fleet** (`build_fleet`): a planner, explorer, builder, and reviewer, each a
+  `Role` whose file tools are confined to a shared `Workspace`. The orchestrator
+  holds a generic **`Dispatch`** tool: it dispatches a specialist by role
+  (`coordinator.dispatch_role`), which lands the specialist's output as a *proposed*
+  artifact. `send()` threads the conversation across turns via the pause/resume
+  spine; `approve` / `reject` are the operator's explicit promotions. The Builder
+  is the only do-er that changes the world (write/edit/run), and it self-verifies.
 - **CLI:** `agentique` (or `uv run agentique`) — a REPL over `Console`. It reads
   `ANTHROPIC_API_KEY` from the environment or a local `.env` (parsed with the
   standard library, no third-party loader), and supports `/artifacts`,
@@ -124,8 +144,10 @@ Standard src-layout single package:
 ```
 pyproject.toml
 src/agentique/
+  __init__.py                                    # harness public surface (Coordinator, …)
+  coordinator.py  session.py  artifact.py        # harness (generic), at the root
+  store.py  role.py
   core/  tools/  memory/  testing/  anthropic/   # framework
-  code/                                          # harness (generic)
   console/                                       # application (CLI)
 tests/
   core/  tools/  memory/  testing/  anthropic/  test_import_discipline.py
@@ -135,8 +157,8 @@ Two boundaries are enforced structurally by `tests/test_import_discipline.py`.
 The **zero-third-party** boundary: no module under `src/agentique` **except**
 `agentique.anthropic` imports anything outside the standard library and
 `agentique` itself. The **three-layer** boundary: the dependency arrow runs one
-way, `console → code → core`, so `core` must not import `code`/`console` and
-`code` must not import `console`.
+way, `console → harness → core`, so `core` must not import the harness or
+`console`, and the harness must not import `console`.
 
 ## Development
 

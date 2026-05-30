@@ -6,16 +6,24 @@ Session and maps its terminal ``Result`` into stored state (a ``proposed``
 Artifact on completion); ``resume`` routes a human's answer to a *specific* paused
 Session by id and continues that run. Full async fan-out (many sessions in flight
 at once) builds on this spine — this session exercises it one run at a time.
+
+It also holds a registry of named :class:`~agentique.role.Role`\\ s, so an
+application (or an orchestrator) can dispatch a specialist *by name*
+(``dispatch_role``) — an explicit coordination act, not a side effect hidden in a
+tool. Artifact promotion is likewise explicit: ``promote_artifact`` moves a stored
+artifact to any application-defined status, with ``approve``/``reject`` as the
+common cases.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from agentique.code.artifact import Artifact
-from agentique.code.session import Session
-from agentique.code.store import Store
+from agentique.artifact import Artifact
 from agentique.core import Agent, Blocked, Completed, NeedsHuman, Result, Runtime
+from agentique.role import Role
+from agentique.session import Session
+from agentique.store import Store
 
 
 class Coordinator:
@@ -27,6 +35,7 @@ class Coordinator:
         self._store: Store = store if store is not None else Store()
         self._runtime: Runtime = runtime if runtime is not None else Runtime()
         self._sessions: dict[str, Session] = {}
+        self._roles: dict[str, Role] = {}
         self._session_seq = 0
         self._artifact_seq = 0
 
@@ -42,6 +51,18 @@ class Coordinator:
         """All live Sessions, in creation order."""
         return tuple(self._sessions.values())
 
+    def register_role(self, role: Role) -> None:
+        """Register a named specialist that ``dispatch_role`` can launch."""
+        self._roles[role.name] = role
+
+    def role(self, name: str) -> Role | None:
+        """The registered Role named ``name``, or ``None`` if there is none."""
+        return self._roles.get(name)
+
+    def roles(self) -> tuple[Role, ...]:
+        """All registered Roles, in registration order."""
+        return tuple(self._roles.values())
+
     async def dispatch(
         self, agent: Agent, prompt: str, *, kind: str = "result"
     ) -> Session:
@@ -54,6 +75,13 @@ class Coordinator:
         result = await self._runtime.run(agent, prompt)
         return await self._finalize(session, result)
 
+    async def dispatch_role(self, name: str, prompt: str) -> Session:
+        """Dispatch the registered Role ``name`` on ``prompt`` as a new Session."""
+        role = self._roles.get(name)
+        if role is None:
+            raise KeyError(f"no role {name!r}")
+        return await self.dispatch(role.agent, prompt, kind=role.kind)
+
     async def resume(self, session_id: str, answer: str) -> Session:
         """Continue the paused Session ``session_id`` with the human's ``answer``."""
         session = self._sessions.get(session_id)
@@ -64,21 +92,26 @@ class Coordinator:
         result = await self._runtime.resume(session.agent, session.paused, answer)
         return await self._finalize(session, result)
 
-    async def approve_artifact(self, artifact_id: str) -> Artifact:
-        """Mark a stored artifact ``approved`` and persist it."""
-        return await self._transition(artifact_id, approve=True)
+    async def promote_artifact(self, artifact_id: str, status: str) -> Artifact:
+        """Move a stored artifact to ``status`` and persist it.
 
-    async def reject_artifact(self, artifact_id: str) -> Artifact:
-        """Mark a stored artifact ``rejected`` and persist it."""
-        return await self._transition(artifact_id, approve=False)
-
-    async def _transition(self, artifact_id: str, *, approve: bool) -> Artifact:
+        The general, explicit promotion act an operator drives. ``status`` is an
+        application-defined string; the harness assigns it no meaning.
+        """
         artifact = await self._store.get_artifact(artifact_id)
         if artifact is None:
             raise KeyError(f"no artifact {artifact_id!r}")
-        updated = artifact.approved() if approve else artifact.rejected()
+        updated = artifact.with_status(status)
         await self._store.put_artifact(updated)
         return updated
+
+    async def approve_artifact(self, artifact_id: str) -> Artifact:
+        """Mark a stored artifact ``approved`` and persist it (common case)."""
+        return await self.promote_artifact(artifact_id, "approved")
+
+    async def reject_artifact(self, artifact_id: str) -> Artifact:
+        """Mark a stored artifact ``rejected`` and persist it (common case)."""
+        return await self.promote_artifact(artifact_id, "rejected")
 
     async def _finalize(self, session: Session, result: Result) -> Session:
         """Map a run's terminal Result into the Session and the shared store."""

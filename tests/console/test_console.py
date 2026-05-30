@@ -1,52 +1,39 @@
-"""Console: the orchestrator dispatches the planner (which reads a real file) into
-a proposed artifact, pauses for the operator via ask_human, threads the
-conversation across resumes, and approves/rejects artifacts. Offline via StubModel.
+"""Console: the orchestrator dispatches fleet specialists via the generic dispatch
+tool, lands their output as proposed artifacts, pauses via ask_human, threads the
+conversation across resumes, and approves/rejects artifacts. The Builder actually
+writes into the workspace. Offline via StubModel.
 """
 
 from pathlib import Path
 
 import pytest
 
-from agentique.code import Coordinator
-from agentique.console.agents import build_orchestrator, build_planner
-from agentique.console.console import Console
+from agentique.console.console import Console, build_console
 from agentique.testing import StubModel
 
 
-def _planner_model(path: str) -> StubModel:
-    return StubModel(
-        [
-            StubModel.tool_call("r1", "read_file", {"path": path}),
-            StubModel.text("Plan:\n1. Do A\n2. Do B"),
-        ]
-    )
+def _console(
+    orch: StubModel, fleet: StubModel, *, workspace_root: str = "workspace"
+) -> Console:
+    return build_console(orch, fleet_model=fleet, workspace_root=workspace_root)
 
 
-def _console(orch_model: StubModel, planner_model: StubModel) -> Console:
-    coordinator = Coordinator()
-    orchestrator = build_orchestrator(
-        orch_model, coordinator, build_planner(planner_model)
-    )
-    return Console(orchestrator, coordinator=coordinator)
-
-
-async def test_orchestrator_plans_then_pauses_for_approval(tmp_path: Path) -> None:
-    notes = tmp_path / "notes.txt"
-    notes.write_text("some notes", encoding="utf-8")
-
+async def test_orchestrator_dispatches_planner_then_pauses_for_approval() -> None:
     console = _console(
         StubModel(
             [
-                StubModel.tool_call("p1", "plan_file", {"path": str(notes)}),
+                StubModel.tool_call(
+                    "d1", "dispatch", {"role": "planner", "task": "build a snake game"}
+                ),
                 StubModel.tool_call(
                     "h1", "ask_human", {"question": "Drafted a plan. Approve it?"}
                 ),
             ]
         ),
-        _planner_model(str(notes)),
+        StubModel([StubModel.text("Plan:\n1. Make the board\n2. Move the snake")]),
     )
 
-    turn = await console.send(f"plan {notes}")
+    turn = await console.send("build me a snake game")
     assert turn.awaiting_input is True
     assert turn.done is False
     assert "Approve it?" in turn.message
@@ -55,10 +42,65 @@ async def test_orchestrator_plans_then_pauses_for_approval(tmp_path: Path) -> No
     assert len(artifacts) == 1
     assert artifacts[0].kind == "plan"
     assert artifacts[0].status == "proposed"
-    assert "Do A" in artifacts[0].payload
+    assert "Make the board" in artifacts[0].payload
 
     approved = await console.approve(artifacts[0].id)
     assert approved.status == "approved"
+
+
+async def test_builder_writes_into_the_workspace(tmp_path: Path) -> None:
+    console = _console(
+        StubModel(
+            [
+                StubModel.tool_call(
+                    "d1",
+                    "dispatch",
+                    {"role": "builder", "task": "write snake_game.html"},
+                ),
+                StubModel.tool_call(
+                    "h1", "ask_human", {"question": "Built it. Approve?"}
+                ),
+            ]
+        ),
+        StubModel(
+            [
+                StubModel.tool_call(
+                    "w1",
+                    "write_file",
+                    {"path": "snake_game.html", "content": "<html>snake</html>"},
+                ),
+                StubModel.text("Built snake_game.html in the workspace."),
+            ]
+        ),
+        workspace_root=str(tmp_path),
+    )
+
+    turn = await console.send("build me a snake game in HTML")
+    assert turn.awaiting_input is True
+    # the file really landed on disk, in the confined workspace.
+    assert (tmp_path / "snake_game.html").read_text(encoding="utf-8") == (
+        "<html>snake</html>"
+    )
+    artifacts = await console.artifacts()
+    assert len(artifacts) == 1
+    assert artifacts[0].kind == "change"
+    assert "Built snake_game.html" in artifacts[0].payload
+
+
+async def test_unknown_role_is_surfaced_not_dispatched() -> None:
+    console = _console(
+        StubModel(
+            [
+                StubModel.tool_call("d1", "dispatch", {"role": "ghost", "task": "x"}),
+                StubModel.tool_call("h1", "ask_human", {"question": "what now?"}),
+            ]
+        ),
+        StubModel([StubModel.text("unused")]),
+    )
+    turn = await console.send("do something")
+    assert turn.awaiting_input is True
+    # no artifact produced; the orchestrator was told the role is unknown.
+    assert await console.artifacts() == ()
 
 
 async def test_send_resumes_and_threads_conversation() -> None:
@@ -95,17 +137,17 @@ async def test_send_after_conversation_ends_raises() -> None:
         await console.send("more")
 
 
-async def test_reject_artifact_via_console(tmp_path: Path) -> None:
-    notes = tmp_path / "n.txt"
-    notes.write_text("x", encoding="utf-8")
+async def test_reject_artifact_via_console() -> None:
     console = _console(
         StubModel(
             [
-                StubModel.tool_call("p1", "plan_file", {"path": str(notes)}),
+                StubModel.tool_call(
+                    "d1", "dispatch", {"role": "planner", "task": "go"}
+                ),
                 StubModel.tool_call("h1", "ask_human", {"question": "ok?"}),
             ]
         ),
-        _planner_model(str(notes)),
+        StubModel([StubModel.text("Plan: 1. do it")]),
     )
     await console.send("plan it")
     artifacts = await console.artifacts()

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from agentique.code.artifact import Artifact
+from agentique.artifact import Artifact
 from agentique.core import Agent, Paused
 
 type SessionState = Literal["running", "paused", "done", "failed"]

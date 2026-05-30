@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import json
 
-from agentique.code.artifact import Artifact
-from agentique.code.session import SessionRecord
+from agentique.artifact import Artifact
 from agentique.core import Memory
 from agentique.memory import InMemoryStore
+from agentique.session import SessionRecord
 
 
 def _artifact_json(artifact: Artifact) -> str:

@@ -2,8 +2,8 @@
 listing works, and re-putting the same id overwrites without duplicating the index.
 """
 
-from agentique.code import Artifact, Store
-from agentique.code.session import SessionRecord
+from agentique import Artifact, Store
+from agentique.session import SessionRecord
 
 
 async def test_artifact_round_trips_and_lists() -> None:

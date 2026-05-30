@@ -12,13 +12,16 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
-from agentique.code import Coordinator
-from agentique.console.agents import build_orchestrator, build_planner
+from agentique import Coordinator
+from agentique.console.agents import build_orchestrator
 from agentique.console.cli import load_env
 from agentique.console.console import Console
-from agentique.core import Model, Result
+from agentique.console.fleet import build_fleet
+from agentique.core import Model, Result, Runtime
+from agentique.tools import Workspace
 from observability import (
     InMemoryRecorder,
     build_run_record,
@@ -32,24 +35,32 @@ _RUNS_ROOT = Path(__file__).resolve().parent.parent / "runs"
 
 
 def wire(
-    model: Model, *, planner_model: Model | None = None
+    model: Model,
+    *,
+    fleet_model: Model | None = None,
+    workspace_root: str = "workspace",
 ) -> tuple[Console, InMemoryRecorder]:
-    """Build the Console with both agents instrumented by one shared recorder.
+    """Build the Console with the orchestrator *and* the whole fleet instrumented.
 
-    Wrapping the orchestrator *and* the planner with the same recorder interleaves
-    the planner's nested ``read_file``/model calls into the orchestrator's stream,
-    so one session trace shows the whole multi-agent picture. ``planner_model``
-    defaults to ``model``; pass a separate one to script them apart in tests.
+    Wrapping every agent with the same recorder interleaves each dispatched
+    specialist's nested model/tool calls into the orchestrator's stream, so one
+    session trace shows the whole multi-agent picture. ``fleet_model`` defaults to
+    ``model``; pass a separate one to script the specialists apart in tests.
     """
     recorder = InMemoryRecorder()
-    planner = instrument_agent(
-        build_planner(planner_model if planner_model is not None else model), recorder
+    workspace = Workspace(workspace_root)
+    coordinator = Coordinator(runtime=Runtime(max_turns=24))
+    for role in build_fleet(
+        fleet_model if fleet_model is not None else model, workspace
+    ):
+        coordinator.register_role(
+            replace(role, agent=instrument_agent(role.agent, recorder))
+        )
+    orchestrator = instrument_agent(build_orchestrator(model, coordinator), recorder)
+    return (
+        Console(orchestrator, coordinator=coordinator, runtime=Runtime(max_turns=40)),
+        recorder,
     )
-    coordinator = Coordinator()
-    orchestrator = instrument_agent(
-        build_orchestrator(model, coordinator, planner), recorder
-    )
-    return Console(orchestrator, coordinator=coordinator), recorder
 
 
 def write_session_trace(

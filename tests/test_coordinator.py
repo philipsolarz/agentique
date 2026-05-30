@@ -5,7 +5,7 @@ Exercised offline with StubModel / ask_human.
 
 import pytest
 
-from agentique.code import Coordinator
+from agentique import Coordinator
 from agentique.core import Agent, ModelResponse
 from agentique.testing import StubModel
 from agentique.tools import AskHuman
@@ -93,6 +93,22 @@ async def test_approve_and_reject_artifact_persist() -> None:
 
     rejected = await coord.reject_artifact(artifact_id)
     assert rejected.status == "rejected"
+
+
+async def test_promote_artifact_to_application_defined_status() -> None:
+    coord = Coordinator()
+    session = await coord.dispatch(_planner(StubModel.text("p")), "go", kind="change")
+    assert session.artifact is not None
+
+    promoted = await coord.promote_artifact(session.artifact.id, "executing")
+    assert promoted.status == "executing"
+    stored = await coord.store.get_artifact(session.artifact.id)
+    assert stored is not None and stored.status == "executing"
+
+
+async def test_promote_unknown_artifact_raises() -> None:
+    with pytest.raises(KeyError, match="no artifact"):
+        await Coordinator().promote_artifact("nope", "approved")
 
 
 async def test_two_sessions_get_distinct_ids() -> None:
