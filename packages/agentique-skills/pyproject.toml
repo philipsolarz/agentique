@@ -1,0 +1,23 @@
+[project]
+name = "agentique-skills"
+version = "0.0.1"
+description = "Agentique skills: pure, deterministic Skill implementations."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Philip Solarz", email = "philipsolarz@outlook.com" },
+]
+dependencies = [
+    "agentique-core",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+namespace = true
+module-name = "agentique.skills"
+
+[tool.uv.sources]
+agentique-core = { workspace = true }

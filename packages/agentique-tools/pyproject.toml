@@ -1,0 +1,23 @@
+[project]
+name = "agentique-tools"
+version = "0.0.1"
+description = "Agentique tools: real Tool implementations that cross external boundaries."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Philip Solarz", email = "philipsolarz@outlook.com" },
+]
+dependencies = [
+    "agentique-core",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+namespace = true
+module-name = "agentique.tools"
+
+[tool.uv.sources]
+agentique-core = { workspace = true }
