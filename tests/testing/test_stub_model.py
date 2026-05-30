@@ -1,6 +1,7 @@
 """StubModel: deterministic replay and call recording, fully offline."""
 
 import pytest
+
 from agentique.core import Message, ModelResponse, TextBlock
 from agentique.core.tool import ToolSpec
 from agentique.testing import StubModel, StubModelExhausted

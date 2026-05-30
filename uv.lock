@@ -2,87 +2,37 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
-[manifest]
-members = [
-    "agentique-anthropic",
-    "agentique-core",
-    "agentique-memory",
-    "agentique-skills",
-    "agentique-testing",
-    "agentique-tools",
+[[package]]
+name = "agentique"
+version = "0.0.1"
+source = { editable = "." }
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
 ]
 
-[manifest.dependency-groups]
+[package.dev-dependencies]
 dev = [
+    { name = "anthropic" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "ty" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" }]
+provides-extras = ["anthropic"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "anthropic", specifier = ">=0.40" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.11" },
     { name = "ty" },
 ]
-
-[[package]]
-name = "agentique-anthropic"
-version = "0.0.1"
-source = { editable = "packages/agentique-anthropic" }
-dependencies = [
-    { name = "agentique-core" },
-    { name = "anthropic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "agentique-core", editable = "packages/agentique-core" },
-    { name = "anthropic", specifier = ">=0.40" },
-]
-
-[[package]]
-name = "agentique-core"
-version = "0.0.1"
-source = { editable = "packages/agentique-core" }
-
-[[package]]
-name = "agentique-memory"
-version = "0.0.1"
-source = { editable = "packages/agentique-memory" }
-dependencies = [
-    { name = "agentique-core" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "agentique-core", editable = "packages/agentique-core" }]
-
-[[package]]
-name = "agentique-skills"
-version = "0.0.1"
-source = { editable = "packages/agentique-skills" }
-dependencies = [
-    { name = "agentique-core" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "agentique-core", editable = "packages/agentique-core" }]
-
-[[package]]
-name = "agentique-testing"
-version = "0.0.1"
-source = { editable = "packages/agentique-testing" }
-dependencies = [
-    { name = "agentique-core" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "agentique-core", editable = "packages/agentique-core" }]
-
-[[package]]
-name = "agentique-tools"
-version = "0.0.1"
-source = { editable = "packages/agentique-tools" }
-dependencies = [
-    { name = "agentique-core" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "agentique-core", editable = "packages/agentique-core" }]
 
 [[package]]
 name = "annotated-types"

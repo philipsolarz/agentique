@@ -14,16 +14,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from agentique.core.messages import (
-    ContentBlock,
-    Message,
-    ModelResponse,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-)
-from agentique.core.tool import ToolSpec
-
 from anthropic import AsyncAnthropic
 from anthropic.types import (
     Message as SdkMessage,
@@ -41,6 +31,16 @@ from anthropic.types import (
 from anthropic.types import (
     ToolUseBlock as SdkToolUseBlock,
 )
+
+from agentique.core.messages import (
+    ContentBlock,
+    Message,
+    ModelResponse,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+from agentique.core.tool import ToolSpec
 
 _ContentBlockParam = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam
 

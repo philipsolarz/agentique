@@ -1,8 +1,9 @@
-"""A minimal inline Tool for Runtime dispatch tests, private to core's suite.
+"""A deterministic, offline ``Tool`` for tests.
 
-Records the arguments it was called with and returns a scripted result, so tests
-can assert both that the Runtime dispatched the call and what it fed back. The
-real, shipped tools live in ``agentique-tools``; core stays dependency-free.
+``EchoTool`` echoes one of its arguments back as the result and records every
+call it received, so tests can assert both that the Runtime dispatched the call
+and what it fed back — without crossing any real external boundary. It is shipped
+(not test-only) so the application layer can reuse it, mirroring :class:`StubModel`.
 """
 
 from __future__ import annotations

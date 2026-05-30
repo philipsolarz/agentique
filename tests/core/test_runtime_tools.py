@@ -1,9 +1,8 @@
 """Runtime tool dispatch + permission enforcement, exercised offline."""
 
-from _fake_tool import EchoTool
-from _stub import StubModel
 from agentique.core import Agent, Blocked, Completed, Permissions, Runtime
 from agentique.core.messages import ToolResultBlock
+from agentique.testing import EchoTool, StubModel
 
 
 def _agent(model: StubModel, tool: EchoTool, permissions: Permissions) -> Agent:

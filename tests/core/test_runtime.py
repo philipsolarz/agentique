@@ -1,7 +1,7 @@
 """The Runtime loop, exercised offline with a private inline Model stub."""
 
-from _stub import StubModel
 from agentique.core import Agent, Blocked, Completed, Runtime
+from agentique.testing import StubModel
 
 
 def _agent(model: StubModel) -> Agent:

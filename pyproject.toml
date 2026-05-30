@@ -1,9 +1,23 @@
-# Virtual workspace root: this file configures the uv workspace and shared
-# tooling, but is NOT itself a buildable package (no [project], no
-# [build-system]). The installable packages live under packages/*.
+[project]
+name = "agentique"
+version = "0.0.1"
+description = "Agentique: an application-agnostic Python agent framework."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Philip Solarz", email = "philipsolarz@outlook.com" },
+]
+dependencies = []
 
-[tool.uv.workspace]
-members = ["packages/*"]
+[project.optional-dependencies]
+# The Anthropic provider (agentique.anthropic) is the only submodule that imports
+# a third-party SDK. It lives behind this extra so `pip install agentique` pulls
+# zero third-party deps; `agentique[anthropic]` adds exactly the SDK.
+anthropic = ["anthropic>=0.40"]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
@@ -11,7 +25,17 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.11",
     "ty",
+    # The Anthropic SDK is a runtime *extra* (above), not a base dependency. It is
+    # also pulled into the dev environment here so `ty check` and `pytest` can load
+    # `agentique.anthropic` under `make check`. `pip install agentique` stays clean.
+    "anthropic>=0.40",
 ]
+
+[tool.uv.workspace]
+# Self-anchor as a single-package workspace (root is the only member). Without a
+# `[tool.uv.workspace]` table, uv walks up the filesystem and would attach this
+# project to an ancestor workspace.
+members = []
 
 [tool.ruff]
 target-version = "py312"
@@ -20,16 +44,6 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
-# No `pythonpath` override: `uv sync` installs every workspace member as an
-# editable install (a `.pth` per package pointing at its `src`), so the shared
-# `agentique.*` namespace merges across all members and resolves to live source.
-# pytest's own rootdir insertion makes the private `_stub`/`_fake_tool` test
-# helpers importable within each tests/ directory.
-
-# No `[tool.ty.environment] extra-paths`: ty resolves against the project venv,
-# where the editable installs present a single merged `agentique.*` namespace.
-# (Feeding ty the six raw src roots instead made it unable to merge the namespace
-# portions across roots — a PEP 420 + preview-ty limitation we hit and removed.)

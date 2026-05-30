@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
 from agentique.core.memory import Memory
 from agentique.memory import FileStore, InMemoryStore
 

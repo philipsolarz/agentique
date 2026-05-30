@@ -5,6 +5,10 @@ are built with ``model_construct`` so fixtures stay minimal while remaining real
 instances (so the converter's ``isinstance`` checks behave as in production).
 """
 
+from anthropic.types import Message as SdkMessage
+from anthropic.types import TextBlock as SdkTextBlock
+from anthropic.types import ToolUseBlock as SdkToolUseBlock
+
 from agentique.anthropic.model import (
     _from_sdk_response,
     _to_content_param,
@@ -18,9 +22,6 @@ from agentique.core.messages import (
     ToolUseBlock,
 )
 from agentique.core.tool import ToolSpec
-from anthropic.types import Message as SdkMessage
-from anthropic.types import TextBlock as SdkTextBlock
-from anthropic.types import ToolUseBlock as SdkToolUseBlock
 
 
 def test_to_content_param_text() -> None:
