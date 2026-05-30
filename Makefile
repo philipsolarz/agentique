@@ -1,4 +1,4 @@
-.PHONY: lint type test check
+.PHONY: lint type test check console
 
 lint:
 	uv run ruff check .
@@ -11,3 +11,7 @@ test:
 	uv run pytest
 
 check: lint type test
+
+# Dev-only: the console REPL with full run capture (writes runs/<ts>-console/).
+console:
+	uv run python -m scenarios.console

@@ -31,8 +31,6 @@ def build_run_record(
     events: Sequence[CallEvent],
     result: Result,
     wall_time_s: float,
-    *,
-    skills_declared: int = 0,
 ) -> RunRecord:
     """Roll up a run's events and terminal Result into a :class:`RunRecord`."""
     return RunRecord(
@@ -41,7 +39,7 @@ def build_run_record(
         turns=sum(isinstance(e, ModelCallEvent) for e in events),
         tool_calls=sum(isinstance(e, ToolCallEvent) for e in events),
         wall_time_s=wall_time_s,
-        anomalies=detect_anomalies(events, result, skills_declared=skills_declared),
+        anomalies=detect_anomalies(events, result),
     )
 
 

@@ -1,10 +1,10 @@
 """Agentique core: the application-agnostic agent framework contracts.
 
 This package holds **only** the generic contracts an agent is built from — the
-seam Protocols (Model, Tool, Skill, Memory), the value types (messages, Context,
+seam Protocols (Model, Tool, Memory), the value types (messages, Context,
 Result, Agent, Permissions), and (from A3) the Runtime that drives them. It has
 **no third-party dependencies**: concrete seam implementations live in satellite
-packages (``agentique.anthropic``, ``agentique.skills``, ``agentique.testing``,
+packages (``agentique.anthropic``, ``agentique.testing``,
 …) that depend on this one.
 
 This module re-exports the public surface; submodules hold one primitive each.
@@ -12,6 +12,7 @@ This module re-exports the public surface; submodules hold one primitive each.
 
 from agentique.core.agent import Agent, Permissions
 from agentique.core.context import Context
+from agentique.core.control import PauseRequested
 from agentique.core.memory import Memory
 from agentique.core.messages import (
     ContentBlock,
@@ -24,9 +25,8 @@ from agentique.core.messages import (
     ToolUseBlock,
 )
 from agentique.core.model import Model
-from agentique.core.result import Blocked, Completed, NeedsHuman, Result
+from agentique.core.result import Blocked, Completed, NeedsHuman, Paused, Result
 from agentique.core.runtime import Runtime
-from agentique.core.skill import Skill
 from agentique.core.tool import Tool, ToolResult, ToolSpec
 
 __version__ = "0.0.1"
@@ -42,11 +42,12 @@ __all__ = [
     "Model",
     "ModelResponse",
     "NeedsHuman",
+    "PauseRequested",
+    "Paused",
     "Permissions",
     "Result",
     "Role",
     "Runtime",
-    "Skill",
     "StopReason",
     "TextBlock",
     "Tool",

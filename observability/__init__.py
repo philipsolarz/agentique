@@ -20,6 +20,7 @@ from observability.events import (
     run_record_to_dict,
     to_jsonl_line,
 )
+from observability.instrument import instrument_agent
 from observability.recorder import InMemoryRecorder, Recorder
 from observability.wrappers import RecordingModel, RecordingTool
 from observability.writer import build_run_record, write_run
@@ -38,6 +39,7 @@ __all__ = [
     "build_run_record",
     "detect_anomalies",
     "group_into_turns",
+    "instrument_agent",
     "render_digest",
     "run_record_to_dict",
     "standing_notes",

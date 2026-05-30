@@ -1,10 +1,9 @@
 """The Tool seam: an action that crosses an external boundary.
 
 A Tool may perform I/O — filesystem, network, spawning another agent — and is
-therefore permission-gated (the check lives in the Runtime, not the tool). This
-is the deliberate contrast with :class:`~agentique.core.skill.Skill`, which is
-pure. The seam is structural: any object exposing a ``spec`` and an async
-``__call__`` of the right shape *is* a Tool, with no inheritance required.
+therefore permission-gated (the check lives in the Runtime, not the tool). The
+seam is structural: any object exposing a ``spec`` and an async ``__call__`` of
+the right shape *is* a Tool, with no inheritance required.
 """
 
 from __future__ import annotations

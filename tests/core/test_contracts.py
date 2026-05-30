@@ -17,6 +17,7 @@ from agentique.core import (
     Message,
     ModelResponse,
     NeedsHuman,
+    Paused,
     Result,
     TextBlock,
 )
@@ -42,7 +43,6 @@ class _FakeModel:
 def test_agent_accepts_structural_model() -> None:
     agent = Agent(name="t", instructions="i", model=_FakeModel())
     assert agent.tools == ()
-    assert agent.skills == ()
     assert agent.permissions.allowed_tools is None
 
 
@@ -61,5 +61,5 @@ def _describe(result: Result) -> str:
 def test_result_union_is_exhaustive() -> None:
     ctx = Context()
     assert _describe(Completed("x", ctx)) == "done:x"
-    assert _describe(NeedsHuman("y", ctx)) == "ask:y"
+    assert _describe(NeedsHuman("y", Paused(ctx, "c1"))) == "ask:y"
     assert _describe(Blocked("z", ctx)) == "blocked:z"

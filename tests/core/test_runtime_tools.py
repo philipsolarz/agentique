@@ -1,7 +1,10 @@
 """Runtime tool dispatch + permission enforcement, exercised offline."""
 
+from collections.abc import Mapping
+
 from agentique.core import Agent, Blocked, Completed, Permissions, Runtime
 from agentique.core.messages import ToolResultBlock
+from agentique.core.tool import ToolResult, ToolSpec
 from agentique.testing import EchoTool, StubModel
 
 
@@ -81,7 +84,7 @@ async def test_tool_error_is_reported_to_model_not_fatal() -> None:
         ]
     )
     result = await Runtime().run(_agent(model, tool, Permissions()), prompt="go")
-    # a tool *raising/erroring* is fed back as an error result, run continues.
+    # a tool returning an error result is fed back, and the run continues.
     assert isinstance(result, Completed)
     assert result.output == "recovered"
     tool_results = [
@@ -91,3 +94,41 @@ async def test_tool_error_is_reported_to_model_not_fatal() -> None:
         if isinstance(block, ToolResultBlock)
     ]
     assert tool_results[0].is_error is True
+
+
+class _RaisingTool:
+    """A Tool whose ``__call__`` raises — to prove a raise is recoverable."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="boom",
+            description="always raises",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+        raise RuntimeError("kaboom")
+
+
+async def test_tool_that_raises_is_recoverable_not_fatal() -> None:
+    # A tool that *raises* (rather than returning is_error) must be folded into an
+    # error result the model can recover from, not propagated out of run().
+    model = StubModel(
+        [
+            StubModel.tool_call("c1", "boom", {}),
+            StubModel.text("recovered"),
+        ]
+    )
+    agent = Agent(name="t", instructions="x", model=model, tools=(_RaisingTool(),))
+    result = await Runtime().run(agent, prompt="go")
+    assert isinstance(result, Completed)
+    assert result.output == "recovered"
+    tool_results = [
+        block
+        for message in result.context.messages
+        for block in message.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert tool_results[0].is_error is True
+    assert "raised" in tool_results[0].content

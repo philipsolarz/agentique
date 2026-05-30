@@ -3,8 +3,9 @@
 Modeled as a closed union of frozen dataclasses — one variant per terminal
 state — so illegal states are unrepresentable: a ``Blocked`` cannot carry a
 completion payload, because that field does not exist on it, and callers are
-pushed to ``match`` every variant. Each variant carries the terminal Context so
-the caller can inspect, fork, or (for ``NeedsHuman``) later resume the run.
+pushed to ``match`` every variant. ``Completed`` and ``Blocked`` carry the
+terminal Context for inspection or forking; ``NeedsHuman`` carries a resumable
+:class:`Paused` snapshot instead — the value :meth:`Runtime.resume` consumes.
 """
 
 from __future__ import annotations
@@ -23,12 +24,28 @@ class Completed:
 
 
 @dataclass(frozen=True, slots=True)
+class Paused:
+    """A self-contained, resumable snapshot of one paused run.
+
+    Carries the immutable ``context`` accumulated up to the pause plus the
+    ``pending_tool_use_id`` of the unanswered ``ask_human`` call, so
+    :meth:`Runtime.resume` can pair the human's answer to the exact call that
+    requested it. It is a value of values (no model or tool objects), so a caller
+    holding several paused runs can resume any one independently — pause is a
+    property of *this* run, not of the conversation as a whole.
+    """
+
+    context: Context
+    pending_tool_use_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class NeedsHuman:
     """The run paused awaiting human input. ``question`` is what is being asked;
-    ``context`` is the state from which the run can later be resumed."""
+    ``paused`` is the resumable snapshot to hand back to :meth:`Runtime.resume`."""
 
     question: str
-    context: Context
+    paused: Paused
 
 
 @dataclass(frozen=True, slots=True)

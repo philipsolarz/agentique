@@ -14,17 +14,16 @@ otherwise a delegated run shows up as a single tool call here.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from agentique.core import Agent, Runtime
 from agentique.core.result import Result
 from observability import (
     InMemoryRecorder,
-    RecordingModel,
-    RecordingTool,
     RunRecord,
     build_run_record,
+    instrument_agent,
     write_run,
 )
 
@@ -63,11 +62,7 @@ async def run_scenario(
     runs_root = runs_root if runs_root is not None else _RUNS_ROOT
 
     recorder = recorder if recorder is not None else InMemoryRecorder()
-    instrumented = replace(
-        agent,
-        model=RecordingModel(agent.model, recorder),
-        tools=tuple(RecordingTool(tool, recorder) for tool in agent.tools),
-    )
+    instrumented = instrument_agent(agent, recorder)
 
     start = time.perf_counter()
     result = await runtime.run(instrumented, prompt)
@@ -78,7 +73,6 @@ async def run_scenario(
         recorder.events,
         result,
         wall_time_s,
-        skills_declared=len(agent.skills),
     )
     stamp = timestamp if timestamp is not None else time.strftime("%Y%m%d-%H%M%S")
     out_dir = write_run(runs_root / f"{stamp}-{scenario}", record, recorder.events)

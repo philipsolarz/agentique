@@ -68,13 +68,24 @@ def test_tool_error_result_is_flagged() -> None:
     )
 
 
-def test_raised_tool_is_flagged_as_unrecoverable() -> None:
+def test_raised_tool_is_flagged_as_recoverable() -> None:
     events = [
         _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
         _tool(raised="RuntimeError"),
     ]
     anomalies = detect_anomalies(events, Completed("", _CTX))
-    assert any("propagates out of run()" in a for a in anomalies)
+    assert any("can recover from" in a for a in anomalies)
+
+
+def test_pause_requested_pause_is_not_flagged() -> None:
+    # ask_human's PauseRequested control signal is expected, not an anomaly.
+    events = [
+        _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
+        _tool(raised="PauseRequested"),
+    ]
+    anomalies = detect_anomalies(events, Completed("", _CTX))
+    assert not any("PauseRequested" in a for a in anomalies)
+    assert not any("raised" in a for a in anomalies)
 
 
 def test_multi_call_turn_qualifies_the_locator() -> None:
@@ -105,14 +116,6 @@ def test_max_turns_block_is_flagged() -> None:
     assert any("turn limit" in a for a in anomalies)
 
 
-def test_skills_declared_is_run_touched_and_surfaces_per_run() -> None:
-    anomalies = detect_anomalies(
-        [_model("end_turn")], Completed("", _CTX), skills_declared=2
-    )
-    assert any("never invokes skills" in a for a in anomalies)
-
-
 def test_standing_notes_carry_the_static_limitations() -> None:
     notes = standing_notes()
     assert any("usage is not capturable" in n for n in notes)
-    assert any("NeedsHuman is never returned" in n for n in notes)

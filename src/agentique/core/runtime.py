@@ -1,6 +1,6 @@
 """The Runtime: the engine that drives a declarative Agent to a Result.
 
-The Agent declares *what* it is (role, model, tools, skills, permissions); the
+The Agent declares *what* it is (role, model, tools, permissions); the
 Runtime owns *how a run proceeds* — assemble the conversation, call the model,
 dispatch any tool calls, decide when the run is done, emit a Result. Run-control
 (the turn limit and the stop decision) lives here, not on the Agent, per the
@@ -22,22 +22,22 @@ from dataclasses import dataclass, replace
 
 from agentique.core.agent import Agent, Permissions
 from agentique.core.context import Context
+from agentique.core.control import PauseRequested
 from agentique.core.messages import (
     Message,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
-from agentique.core.result import Blocked, Completed, Result
-from agentique.core.tool import Tool
+from agentique.core.result import Blocked, Completed, NeedsHuman, Paused, Result
+from agentique.core.tool import Tool, ToolResult
 
 
 def _final_text(message: Message) -> str:
     """Join the text blocks of an assistant message into the run's output.
 
-    Derived inline rather than by importing the ``ExtractText`` skill: skills live
-    in a satellite package that depends on core, so core cannot depend back on
-    them. A deliberate two-line duplication, not a missed reuse.
+    A direct two-line fold rather than a shared helper — trivial enough that a
+    dedicated abstraction would not earn its keep.
     """
     return "".join(b.text for b in message.content if isinstance(b, TextBlock))
 
@@ -67,11 +67,50 @@ class Runtime:
 
     async def run(self, agent: Agent, prompt: str) -> Result:
         """Drive ``agent`` from an initial user ``prompt`` to a terminal Result."""
-        tools_by_name = {tool.spec.name: tool for tool in agent.tools}
         context = Context(
             messages=(Message(role="user", content=(TextBlock(prompt),)),),
             turn=0,
         )
+        return await self._drive(agent, context)
+
+    async def resume(self, agent: Agent, paused: Paused, answer: str) -> Result:
+        """Continue a specific paused run, folding the human's ``answer`` in.
+
+        ``paused`` is the self-contained snapshot from a prior ``NeedsHuman``; the
+        ``answer`` becomes the tool result for the ``ask_human`` call that paused
+        the run. It targets exactly the run ``paused`` describes, so several paused
+        runs can be resumed independently. The turn counter is *not* reset, so
+        ``max_turns`` still bounds the whole run across any number of pauses.
+
+        Idempotent w.r.t. side effects: tools that ran before the pause already
+        have their results baked into ``paused.context``; resume only appends the
+        answer and continues forward — it never replays a prior tool call.
+        """
+        context = replace(
+            paused.context,
+            messages=(
+                *paused.context.messages,
+                Message(
+                    role="user",
+                    content=(
+                        ToolResultBlock(
+                            tool_use_id=paused.pending_tool_use_id,
+                            content=answer,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return await self._drive(agent, context)
+
+    async def _drive(self, agent: Agent, context: Context) -> Result:
+        """The loop shared by ``run`` and ``resume``: model, then tools, repeat.
+
+        Threads a fresh immutable ``context`` each step from the given starting
+        point until a terminal Result — so ``run`` (fresh context) and ``resume``
+        (context + the human's answer) share one source of loop truth.
+        """
+        tools_by_name = {tool.spec.name: tool for tool in agent.tools}
         while True:
             if context.turn >= self.max_turns:
                 return Blocked(
@@ -100,9 +139,24 @@ class Runtime:
                     context=context,
                 )
 
-            result_blocks, blocked = await self._dispatch(
-                calls, tools_by_name, agent.permissions
-            )
+            try:
+                result_blocks, blocked = await self._dispatch(
+                    calls, tools_by_name, agent.permissions
+                )
+            except PauseRequested as pause:
+                # A cooperating tool asked to pause for human input. ``ask_human``
+                # must be the sole call in its turn so exactly one tool_use is left
+                # unanswered — the pairing ``resume`` answers. Reject the mixed
+                # turn loudly rather than building a half-answered conversation.
+                if len(calls) != 1:
+                    return Blocked(
+                        reason="ask_human must be the sole tool call in its turn",
+                        context=context,
+                    )
+                return NeedsHuman(
+                    question=pause.question,
+                    paused=Paused(context=context, pending_tool_use_id=calls[0].id),
+                )
             if blocked is not None:
                 return Blocked(reason=blocked, context=context)
             context = replace(
@@ -123,8 +177,10 @@ class Runtime:
 
         Returns the tool-result blocks to feed back to the model, plus an optional
         block reason. A denied permission or an unknown tool ends the run
-        (``Blocked``); an *error raised by the tool itself* is reported back to the
-        model as an error result so it can recover, rather than aborting the run.
+        (``Blocked``). An exception *raised* by a tool is folded into an error
+        result so the model can recover, rather than aborting the run — except
+        ``PauseRequested``, a cooperating tool's control signal, which propagates
+        to the loop to pause the run.
         """
         result_blocks: list[ToolResultBlock] = []
         for call in calls:
@@ -133,7 +189,14 @@ class Runtime:
             tool = tools_by_name.get(call.name)
             if tool is None:
                 return result_blocks, f"unknown tool {call.name!r}"
-            outcome = await tool(call.input)
+            try:
+                outcome = await tool(call.input)
+            except PauseRequested:
+                raise
+            except Exception as exc:
+                outcome = ToolResult(
+                    content=f"tool {call.name!r} raised: {exc!r}", is_error=True
+                )
             result_blocks.append(
                 ToolResultBlock(
                     tool_use_id=call.id,

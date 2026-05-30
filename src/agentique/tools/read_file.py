@@ -1,6 +1,6 @@
 """A real tool: read a UTF-8 text file from the filesystem.
 
-Crosses the filesystem boundary, so it is a Tool (not a Skill) and is subject to
+Crosses the filesystem boundary, so it is a Tool and is subject to
 the Runtime's permission check. It is read-only and non-destructive. Failures
 (missing file, decode error, a path that is a directory) are returned as error
 results rather than raised, so the Runtime can feed them back to the model for
