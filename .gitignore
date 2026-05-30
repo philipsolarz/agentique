@@ -17,3 +17,9 @@ dist/
 
 # OS / editor
 .DS_Store
+
+# Observability harness output (generated data, not source)
+runs/
+
+# Local secrets for the dev-only scenarios harness
+.env

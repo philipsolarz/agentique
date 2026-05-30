@@ -1,0 +1,118 @@
+"""Anomaly detector: each run-specific rule fires on the synthetic event stream it
+targets, a clean run stays silent, locators carry turn numbers (qualified for
+multi-call turns), and the static standing notes live apart from per-run findings.
+"""
+
+from agentique.core.context import Context
+from agentique.core.result import Blocked, Completed
+from observability.anomalies import detect_anomalies, standing_notes
+from observability.events import (
+    ContentBlockSummary,
+    ModelCallEvent,
+    ToolCallEvent,
+)
+
+_CTX = Context()
+
+
+def _model(
+    stop_reason: str | None,
+    *,
+    blocks: tuple[ContentBlockSummary, ...] = (ContentBlockSummary("text", 5),),
+    raised: str | None = None,
+) -> ModelCallEvent:
+    return ModelCallEvent(
+        system_len=10,
+        message_count=1,
+        tool_names=(),
+        stop_reason=stop_reason,
+        blocks=() if raised else blocks,
+        latency_s=0.1,
+        raised=raised,
+    )
+
+
+def _tool(*, is_error: bool = False, raised: str | None = None) -> ToolCallEvent:
+    return ToolCallEvent(
+        tool_name="read_file",
+        arguments={"path": "x"},
+        result_len=None if raised else 10,
+        is_error=None if raised else is_error,
+        latency_s=0.02,
+        raised=raised,
+    )
+
+
+def test_clean_text_run_is_silent() -> None:
+    # The static usage note is hoisted to the summary, so a clean run says nothing.
+    anomalies = detect_anomalies([_model("end_turn")], Completed("hi", _CTX))
+    assert anomalies == ()
+
+
+def test_unhandled_stop_reason_is_flagged_with_turn_locator() -> None:
+    anomalies = detect_anomalies([_model("max_tokens")], Completed("", _CTX))
+    assert any(
+        a.startswith("turn 1:") and "max_tokens" in a and "no explicit handling" in a
+        for a in anomalies
+    )
+
+
+def test_tool_error_result_is_flagged() -> None:
+    events = [
+        _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
+        _tool(is_error=True),
+    ]
+    anomalies = detect_anomalies(events, Completed("", _CTX))
+    assert any(
+        a.startswith("turn 1:") and "returned an error result" in a for a in anomalies
+    )
+
+
+def test_raised_tool_is_flagged_as_unrecoverable() -> None:
+    events = [
+        _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
+        _tool(raised="RuntimeError"),
+    ]
+    anomalies = detect_anomalies(events, Completed("", _CTX))
+    assert any("propagates out of run()" in a for a in anomalies)
+
+
+def test_multi_call_turn_qualifies_the_locator() -> None:
+    # Two tool calls in one turn: the second errors -> 'turn 1 call 2'.
+    events = [
+        _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
+        _tool(),
+        _tool(is_error=True),
+    ]
+    anomalies = detect_anomalies(events, Completed("", _CTX))
+    assert any(a.startswith("turn 1 call 2:") for a in anomalies)
+
+
+def test_tool_use_without_tool_block_is_flagged() -> None:
+    # stop_reason says tool_use but the model returned only text — a dropped block.
+    anomalies = detect_anomalies(
+        [_model("tool_use", blocks=(ContentBlockSummary("text", 3),))],
+        Completed("", _CTX),
+    )
+    assert any("no tool_use block present" in a for a in anomalies)
+
+
+def test_max_turns_block_is_flagged() -> None:
+    result = Blocked("exceeded max_turns (8)", _CTX)
+    anomalies = detect_anomalies(
+        [_model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),))], result
+    )
+    assert any("turn limit" in a for a in anomalies)
+
+
+def test_skills_declared_is_run_touched_and_surfaces_per_run() -> None:
+    anomalies = detect_anomalies(
+        [_model("end_turn")], Completed("", _CTX), skills_declared=2
+    )
+    assert any("never invokes skills" in a for a in anomalies)
+
+
+def test_standing_notes_carry_the_static_limitations() -> None:
+    notes = standing_notes()
+    assert any("usage is not capturable" in n for n in notes)
+    assert any("NeedsHuman is never returned" in n for n in notes)

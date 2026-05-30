@@ -47,3 +47,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
+# The dev-only `observability` package lives at the repo root (outside `src/`, so
+# it is never shipped). Put the root on the path so `tests/observability` can
+# import it. `scenarios/` is added for the Part-2/Part-3 driver tests.
+pythonpath = ["."]
