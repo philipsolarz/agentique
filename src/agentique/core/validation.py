@@ -63,7 +63,14 @@ def validate_tool_args(
 
 def validate_output(output_type: type[BaseModel], text: str) -> str | None:
     """Validate an agent's final output text against its declared output type.
-    Returns ``None`` when valid, or a self-correction message when not."""
+    Returns ``None`` when valid, or a self-correction message when not.
+
+    Known limitation: validation goes through ``model_validate_json``, so a typed
+    ``output_type`` requires the model's final message to be *raw* JSON. A model that
+    wraps the JSON in prose or a ```` ``` ```` code fence fails to parse and burns a
+    turn self-correcting. A tool-call-based structured-output path (force a final
+    tool call whose args carry the typed value, sidestepping the prose problem) is
+    deferred headroom — not built here."""
     try:
         PydanticValidator(output_type).validate_json(text)
         return None
