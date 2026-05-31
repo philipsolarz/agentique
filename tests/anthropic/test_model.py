@@ -76,7 +76,8 @@ def test_from_sdk_response_extracts_text_and_tool_use() -> None:
         stop_reason="tool_use",
     )
     result = _from_sdk_response(sdk)
-    assert result.stop_reason == "tool_use"
+    assert result.stop_reason.kind == "tool_use"
+    assert result.stop_reason.raw == "tool_use"
     assert result.message.role == "assistant"
     assert result.message.content == (
         TextBlock("hello"),
@@ -86,7 +87,9 @@ def test_from_sdk_response_extracts_text_and_tool_use() -> None:
 
 def test_from_sdk_response_defaults_none_stop_reason() -> None:
     sdk = SdkMessage.model_construct(content=[], stop_reason=None)
-    assert _from_sdk_response(sdk).stop_reason == "end_turn"
+    reason = _from_sdk_response(sdk).stop_reason
+    assert reason.kind == "done"
+    assert reason.raw == "end_turn"
 
 
 def test_from_sdk_response_drops_unknown_blocks() -> None:

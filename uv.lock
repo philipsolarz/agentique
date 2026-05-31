@@ -6,6 +6,9 @@ requires-python = ">=3.12"
 name = "agentique"
 version = "0.0.1"
 source = { editable = "." }
+dependencies = [
+    { name = "pydantic" },
+]
 
 [package.optional-dependencies]
 anthropic = [
@@ -22,7 +25,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" }]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
+    { name = "pydantic", specifier = ">=2" },
+]
 provides-extras = ["anthropic"]
 
 [package.metadata.requires-dev]

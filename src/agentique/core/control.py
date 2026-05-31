@@ -21,3 +21,17 @@ class PauseRequested(Exception):
     def __init__(self, question: str) -> None:
         super().__init__(question)
         self.question = question
+
+
+class PermissionDenied(Exception):
+    """Raised by the permission middleware when a ``deny`` rule matches a tool call.
+
+    Not an error the model recovers from: the Engine catches it and ends the run as
+    :class:`~agentique.core.result.Blocked`. ``reason`` explains the denial. (An
+    ``ask`` rule instead raises :class:`PauseRequested`, joining the human-pause
+    spine, so model-driven and policy-driven escalation converge on one mechanism.)
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason

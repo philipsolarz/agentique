@@ -13,6 +13,7 @@ one (confirm the active id in the console/dashboard — do not assume a value).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 from anthropic import AsyncAnthropic
 from anthropic.types import (
@@ -36,17 +37,38 @@ from agentique.core.messages import (
     ContentBlock,
     Message,
     ModelResponse,
+    OpaqueBlock,
+    StopKind,
+    StopReason,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    Usage,
 )
 from agentique.core.tool import ToolSpec
 
 _ContentBlockParam = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam
 
+# How Anthropic's vendor stop reasons map onto the neutral StopKind. Anything not
+# listed (a reason the SDK adds later that we have not modeled) becomes ``other``
+# and is surfaced by the Runtime rather than folded into a quiet completion.
+_STOP_KIND_BY_VENDOR: dict[str, StopKind] = {
+    "end_turn": "done",
+    "stop_sequence": "done",
+    "max_tokens": "length",
+    "tool_use": "tool_use",
+    "pause_turn": "paused",
+    "refusal": "refusal",
+}
+
 
 def _to_content_param(block: ContentBlock) -> _ContentBlockParam:
-    """Convert one core content block to its Anthropic request shape."""
+    """Convert one core content block to its Anthropic request shape.
+
+    An :class:`OpaqueBlock` is replayed verbatim from its ``provider_data`` (which
+    is exactly the vendor JSON it was captured from), so a thinking/citation block
+    the core does not model round-trips back out unchanged.
+    """
     match block:
         case TextBlock(text=text):
             return TextBlockParam(type="text", text=text)
@@ -63,6 +85,8 @@ def _to_content_param(block: ContentBlock) -> _ContentBlockParam:
                 content=content,
                 is_error=is_error,
             )
+        case OpaqueBlock(provider_data=provider_data):
+            return cast(_ContentBlockParam, dict(provider_data))
 
 
 def _to_message_param(message: Message) -> MessageParam:
@@ -82,14 +106,61 @@ def _to_tool_param(spec: ToolSpec) -> ToolParam:
     )
 
 
-def _from_sdk_response(message: SdkMessage) -> ModelResponse:
-    """Convert an Anthropic response back into the core's types.
+def _stop_reason(raw: str | None) -> StopReason:
+    """Map a vendor stop-reason string to the neutral :class:`StopReason`.
 
-    Only text and tool-use blocks are surfaced; other block kinds (thinking,
-    server-tool results) are not enabled by this client and are dropped. The
-    response ``stop_reason`` shares the core's :data:`StopReason` literal set, so
-    it maps across directly; a ``None`` (which the API uses transiently) becomes
-    ``end_turn``.
+    A ``None`` (which the API uses transiently) becomes a normal ``done``; an
+    unrecognised reason is kept as ``other`` with its ``raw`` value preserved.
+    """
+    if raw is None:
+        return StopReason(kind="done", raw="end_turn")
+    return StopReason(kind=_STOP_KIND_BY_VENDOR.get(raw, "other"), raw=raw)
+
+
+def _usage(sdk_usage: object) -> Usage:
+    """Read token counts off the SDK usage object, defaulting missing fields to 0.
+
+    ``getattr`` keeps this robust to ``model_construct`` fixtures (which omit
+    usage) and to SDK versions that do not report cache tokens.
+    """
+
+    def _count(name: str) -> int:
+        value = getattr(sdk_usage, name, None)
+        return value if isinstance(value, int) else 0
+
+    if sdk_usage is None:
+        return Usage()
+    return Usage(
+        input_tokens=_count("input_tokens"),
+        output_tokens=_count("output_tokens"),
+        cache_creation_tokens=_count("cache_creation_input_tokens"),
+        cache_read_tokens=_count("cache_read_input_tokens"),
+    )
+
+
+def _to_opaque(block: object) -> OpaqueBlock | None:
+    """Carry a vendor block the core does not model through as an OpaqueBlock.
+
+    Real SDK blocks (thinking, citations, server-tool results) are Pydantic models
+    with a ``type`` and a JSON ``model_dump``; those become an OpaqueBlock so the
+    payload survives pause/resume and round-trips back out. A value that is not a
+    recognisable block (no ``type``/``model_dump``) is dropped defensively.
+    """
+    kind = getattr(block, "type", None)
+    dump = getattr(block, "model_dump", None)
+    if not isinstance(kind, str) or not callable(dump):
+        return None
+    return OpaqueBlock(kind=kind, provider_data=dump(mode="json"))
+
+
+def _from_sdk_response(message: SdkMessage) -> ModelResponse:
+    """Convert an Anthropic response back into the core's neutral types.
+
+    Text and tool-use blocks map to their modeled IR blocks; every other block
+    kind the core does not model (thinking, server-tool results, citations) is
+    carried through as an :class:`OpaqueBlock` rather than silently dropped. The
+    vendor ``stop_reason`` and ``usage`` are mapped to the neutral
+    :class:`StopReason` and :class:`Usage`.
     """
     blocks: list[ContentBlock] = []
     for block in message.content:
@@ -104,9 +175,14 @@ def _from_sdk_response(message: SdkMessage) -> ModelResponse:
                     input=raw if isinstance(raw, dict) else {},
                 )
             )
+        else:
+            opaque = _to_opaque(block)
+            if opaque is not None:
+                blocks.append(opaque)
     return ModelResponse(
         message=Message(role="assistant", content=tuple(blocks)),
-        stop_reason=message.stop_reason or "end_turn",
+        stop_reason=_stop_reason(message.stop_reason),
+        usage=_usage(getattr(message, "usage", None)),
     )
 
 

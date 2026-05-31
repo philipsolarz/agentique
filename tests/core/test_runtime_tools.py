@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from agentique.core import Agent, Blocked, Completed, Permissions, Runtime
 from agentique.core.messages import ToolResultBlock
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 from agentique.testing import EchoTool, StubModel
 
@@ -46,7 +47,7 @@ async def test_dispatches_tool_then_completes() -> None:
 async def test_denied_permission_blocks_without_running_tool() -> None:
     tool = EchoTool()
     model = StubModel([StubModel.tool_call("c1", "echo", {"value": "x"})])
-    permissions = Permissions(allowed_tools=frozenset())  # nothing allowed
+    permissions = Permissions.allowlist(())  # nothing allowed
     result = await Runtime().run(_agent(model, tool, permissions), prompt="go")
     assert isinstance(result, Blocked)
     assert "permission denied" in result.reason
@@ -61,7 +62,7 @@ async def test_allowlisted_tool_is_dispatched() -> None:
             StubModel.text("fin"),
         ]
     )
-    permissions = Permissions(allowed_tools=frozenset({"echo"}))
+    permissions = Permissions.allowlist({"echo"})
     result = await Runtime().run(_agent(model, tool, permissions), prompt="go")
     assert isinstance(result, Completed)
     assert tool.calls == [{"value": "ok"}]
@@ -107,7 +108,9 @@ class _RaisingTool:
             input_schema={"type": "object", "properties": {}},
         )
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         raise RuntimeError("kaboom")
 
 

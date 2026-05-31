@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from agentique.core.control import PauseRequested
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 
 
@@ -44,7 +45,9 @@ class AskHuman:
             },
         )
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         question = arguments.get("question")
         if not isinstance(question, str):
             return ToolResult(

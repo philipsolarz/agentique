@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentique.core import Message, ModelResponse, TextBlock
+from agentique.core import Message, ModelResponse, StopReason, TextBlock
 from agentique.core.tool import ToolSpec
 from agentique.testing import StubModel, StubModelExhausted
 
@@ -10,7 +10,7 @@ from agentique.testing import StubModel, StubModelExhausted
 def _response(text: str) -> ModelResponse:
     return ModelResponse(
         message=Message(role="assistant", content=(TextBlock(text),)),
-        stop_reason="end_turn",
+        stop_reason=StopReason(kind="done", raw="end_turn"),
     )
 
 

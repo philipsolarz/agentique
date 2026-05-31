@@ -22,11 +22,13 @@ from agentique.core.messages import (
     ContentBlock,
     Message,
     ModelResponse,
+    OpaqueBlock,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
 from agentique.core.model import Model
+from agentique.core.run_context import RunContext
 from agentique.core.tool import Tool, ToolResult, ToolSpec
 from observability.events import ContentBlockSummary, ModelCallEvent, ToolCallEvent
 from observability.recorder import Recorder
@@ -41,6 +43,10 @@ def _summarize_block(block: ContentBlock) -> ContentBlockSummary:
             return ContentBlockSummary(kind="tool_use", size=len(repr(dict(input))))
         case ToolResultBlock(content=content):
             return ContentBlockSummary(kind="tool_result", size=len(content))
+        case OpaqueBlock(provider_data=provider_data):
+            return ContentBlockSummary(
+                kind="opaque", size=len(repr(dict(provider_data)))
+            )
 
 
 class RecordingModel:
@@ -87,7 +93,7 @@ class RecordingModel:
                 system_len=system_len,
                 message_count=message_count,
                 tool_names=tool_names,
-                stop_reason=response.stop_reason,
+                stop_reason=response.stop_reason.kind,
                 blocks=tuple(_summarize_block(b) for b in response.message.content),
                 latency_s=latency_s,
             )
@@ -107,7 +113,9 @@ class RecordingTool:
     def spec(self) -> ToolSpec:
         return self._inner.spec
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         tool_name = self._inner.spec.name
         # Snapshot the inputs before the call so neither the tool nor the Runtime
         # can change what we recorded by reusing or mutating the mapping afterward.
@@ -115,7 +123,7 @@ class RecordingTool:
 
         start = time.perf_counter()
         try:
-            result = await self._inner(arguments)
+            result = await self._inner(ctx, arguments)
         except Exception as exc:
             latency_s = time.perf_counter() - start
             self._recorder.record(

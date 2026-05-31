@@ -1,48 +1,46 @@
-"""A generic multi-agent tool: spawn another agent as a granted capability.
+"""A generic multi-agent tool: dispatch another registered agent as a capability.
 
-``Delegate`` wraps a *child* :class:`~agentique.core.agent.Agent` and exposes it
-as a :class:`~agentique.core.tool.Tool`. When the parent's model calls it, the
-Delegate runs the child to completion on its own Runtime and returns the child's
-output as the tool result.
+``Delegate`` exposes a *child* agent — registered on the Scheduler under
+``child_id`` — as a :class:`~agentique.core.tool.Tool`. When the parent's model
+calls it, the Delegate dispatches the child through ``ctx.dispatch`` (so the child
+runs as its own Scheduler run, recording the parent's run as its parent) and maps
+the child's real structured Result back:
 
-This is deliberately *mechanism, not policy*. It carries **no** orchestration
-logic — no routing, planning, retries, or topology rules. Because delegation is
-just a granted tool, multi-agent topology (hub-and-spoke, nested chains) is a
-function of *which* Delegate tools you grant to *which* agents, decided by the
-caller (and, later, the application layer) — never baked in here. It is gated by
-the parent's permissions exactly like any other tool.
+* ``Completed`` → the child's output, folded into the parent conversation.
+* ``NeedsHuman`` → re-raised as a real pause of the *parent* run (the child's
+  question reaches the human through the same pause spine), not flattened to an
+  error string.
+* ``Blocked`` → an error result the parent's model can react to.
+
+This is deliberately *mechanism, not policy*: it carries no routing/planning logic.
+Multi-agent topology is a function of which Delegate tools are granted to which
+agents, and it is permission-gated like any other tool. Under a bare Engine (no
+Scheduler, so ``ctx.dispatch`` is ``None``) it reports a clear error rather than
+spawning.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agentique.core.agent import Agent
+from agentique.core.control import PauseRequested
 from agentique.core.result import Blocked, Completed, NeedsHuman
-from agentique.core.runtime import Runtime
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 
 
 class Delegate:
-    """Expose a child agent as a tool the parent agent may invoke.
+    """Expose a registered child agent as a tool the parent agent may invoke.
 
     ``name`` is how the parent's model addresses the delegation (so one parent can
-    hold several Delegates to different children under distinct names). The child
-    is driven by ``runtime`` — its own loop, independent of the parent's.
+    hold several Delegates to different children under distinct names); ``child_id``
+    is the id the child agent is registered under on the Scheduler.
     """
 
-    def __init__(
-        self,
-        child: Agent,
-        *,
-        name: str,
-        description: str,
-        runtime: Runtime | None = None,
-    ) -> None:
-        self._child = child
+    def __init__(self, child_id: str, *, name: str, description: str) -> None:
+        self._child_id = child_id
         self._name = name
         self._description = description
-        self._runtime = runtime if runtime is not None else Runtime()
 
     @property
     def spec(self) -> ToolSpec:
@@ -61,25 +59,24 @@ class Delegate:
             },
         )
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         prompt = arguments.get("prompt")
         if not isinstance(prompt, str):
             return ToolResult(
                 content="argument 'prompt' must be a string", is_error=True
             )
-        result = await self._runtime.run(self._child, prompt=prompt)
+        if ctx.dispatch is None:
+            return ToolResult(content="dispatch requires a scheduler", is_error=True)
+        result = await ctx.dispatch(self._child_id, prompt)
         match result:
             case Completed(output=output):
                 return ToolResult(content=output)
             case NeedsHuman(question=question):
-                # Surface the child's pause as an error result: the generic tool
-                # boundary is a single string, so the parent's model is told the
-                # child needs input rather than the run silently stalling. Richer
-                # human-in-the-loop propagation is an application-layer concern.
-                return ToolResult(
-                    content=f"delegated agent needs human input: {question}",
-                    is_error=True,
-                )
+                # Propagate the child's pause as a real pause of the parent run,
+                # rather than flattening it to an error string.
+                raise PauseRequested(question)
             case Blocked(reason=reason):
                 return ToolResult(
                     content=f"delegated agent blocked: {reason}", is_error=True

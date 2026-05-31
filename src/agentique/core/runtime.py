@@ -1,79 +1,127 @@
-"""The Runtime: the engine that drives a declarative Agent to a Result.
+"""The Engine: drives a declarative Agent to a Result, through the middleware onion.
 
-The Agent declares *what* it is (role, model, tools, permissions); the
-Runtime owns *how a run proceeds* — assemble the conversation, call the model,
-dispatch any tool calls, decide when the run is done, emit a Result. Run-control
-(the turn limit and the stop decision) lives here, not on the Agent, per the
-agreed Agent/Runtime split.
+The Agent declares *what* it is (role, model, tools, permissions); the Engine owns
+*how a run proceeds* — assemble the conversation, call the model, dispatch any tool
+calls, decide when the run is done, emit a Result. Run-control (the turn limit and
+the stop decision) lives here, not on the Agent, per the agreed Agent/Engine split.
+The Engine knows nothing about *other* agents; coordinating several is the
+Scheduler's job (a peer in the core), which uses an Engine to advance each one.
 
-The loop (A3 + A4):
+Every step runs through the middleware onion (:mod:`agentique.core.middleware`) at
+a fixed set of points — turn, pre-model, model-call, tool-call. With the default
+empty chain the onion is a pass-through, so the loop below behaves exactly as the
+single-agent loop always has; built-in middlewares (tracing, permissions,
+compaction) layer on without changing it.
+
+The loop:
 
 1. Guard the turn limit; ``Blocked`` if exceeded.
-2. Call the model with the conversation so far and the agent's tool specs.
-3. If the model requested tools (``stop_reason == "tool_use"``): enforce the
-   agent's permissions, dispatch each allowed tool, fold the results back as a
-   user message, and loop.
-4. Otherwise the turn is terminal: ``Completed`` with the assistant's text.
+2. Run one turn (``_one_turn``): compact, call the model, and — if the model
+   requested tools (``stop_reason.kind == "tool_use"``) — dispatch them and fold
+   the results back as a user message, continuing; otherwise return a terminal
+   Result.
+
+``Runtime`` remains as a deprecated alias for ``Engine`` while call sites migrate.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Any, cast
 
-from agentique.core.agent import Agent, Permissions
+from agentique.core.agent import Agent
 from agentique.core.context import Context
-from agentique.core.control import PauseRequested
+from agentique.core.control import PauseRequested, PermissionDenied
 from agentique.core.messages import (
     Message,
+    ModelResponse,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
+from agentique.core.middleware import (
+    Middleware,
+    ModelPoint,
+    PermissionMiddleware,
+    PreModelPoint,
+    ToolPoint,
+    TurnPoint,
+    apply,
+)
 from agentique.core.result import Blocked, Completed, NeedsHuman, Paused, Result
+from agentique.core.run_context import RunContext
 from agentique.core.tool import Tool, ToolResult
+from agentique.core.validation import validate_output, validate_tool_args
 
 
 def _final_text(message: Message) -> str:
-    """Join the text blocks of an assistant message into the run's output.
-
-    A direct two-line fold rather than a shared helper — trivial enough that a
-    dedicated abstraction would not earn its keep.
-    """
+    """Join the text blocks of an assistant message into the run's output."""
     return "".join(b.text for b in message.content if isinstance(b, TextBlock))
 
 
-def _is_permitted(permissions: Permissions, tool_name: str) -> bool:
-    """Whether ``tool_name`` may be dispatched under ``permissions``.
+def _terminal(response: ModelResponse, context: Context) -> Result:
+    """Map a non-tool-dispatching model response to its terminal Result.
 
-    ``allowed_tools is None`` means "every tool the agent holds is permitted";
-    otherwise the name must appear in the allowlist.
+    ``done``/``length``/``refusal`` are genuine terminal completions that carry
+    the assistant's text (a refusal *is* output, not an error). ``tool_use``
+    reaches here only when the model claimed tools but emitted no tool block, so
+    it completes on whatever text it produced. ``paused`` (a provider mid-turn
+    pause we do not continue) and ``other`` (a reason the core does not model) are
+    surfaced as ``Blocked`` — never folded into a quiet ``Completed``, which is
+    the silent-fold defect this replaces.
     """
-    if permissions.allowed_tools is None:
-        return True
-    return tool_name in permissions.allowed_tools
+    kind = response.stop_reason.kind
+    if kind in ("done", "length", "refusal", "tool_use"):
+        return Completed(output=_final_text(response.message), context=context)
+    return Blocked(
+        reason=f"unhandled stop_reason {kind!r} (raw {response.stop_reason.raw!r})",
+        context=context,
+    )
+
+
+async def _just(value: Any) -> Any:
+    """A trivial coroutine returning ``value`` — the core action at a pass-through
+    point (e.g. pre-model with no compactor proposes the unchanged Context)."""
+    return value
 
 
 @dataclass(frozen=True, slots=True)
-class Runtime:
+class Engine:
     """Drives one Agent through a single run to a Result.
 
-    ``max_turns`` is the run-control knob: the maximum number of model calls
-    before the Runtime gives up and reports ``Blocked``. A plain int — not a
-    separate ``StopPolicy`` object — until a second stop dimension actually
-    appears (avoiding speculative generality).
+    ``max_turns`` is the run-control knob: the maximum number of model calls before
+    the Engine gives up and reports ``Blocked``. ``middleware`` is the onion applied
+    at every interposition point; the default empty chain is a pass-through.
     """
 
     max_turns: int = 8
+    middleware: tuple[Middleware, ...] = ()
 
-    async def run(self, agent: Agent, prompt: str) -> Result:
-        """Drive ``agent`` from an initial user ``prompt`` to a terminal Result."""
+    async def run(
+        self, agent: Agent, prompt: str, *, ctx: RunContext | None = None
+    ) -> Result:
+        """Drive ``agent`` from an initial user ``prompt`` to a terminal Result.
+
+        ``ctx`` is the run handle passed to tools (run id, event emit, dispatch); a
+        Scheduler supplies one bound to the run, and a bare Engine defaults to a
+        capability-free handle (no dispatch).
+        """
         context = Context(
             messages=(Message(role="user", content=(TextBlock(prompt),)),),
             turn=0,
         )
-        return await self._drive(agent, context)
+        return await self._drive(
+            agent, context, ctx if ctx is not None else RunContext()
+        )
 
-    async def resume(self, agent: Agent, paused: Paused, answer: str) -> Result:
+    async def resume(
+        self,
+        agent: Agent,
+        paused: Paused,
+        answer: str,
+        *,
+        ctx: RunContext | None = None,
+    ) -> Result:
         """Continue a specific paused run, folding the human's ``answer`` in.
 
         ``paused`` is the self-contained snapshot from a prior ``NeedsHuman``; the
@@ -101,102 +149,156 @@ class Runtime:
                 ),
             ),
         )
-        return await self._drive(agent, context)
+        return await self._drive(
+            agent, context, ctx if ctx is not None else RunContext()
+        )
 
-    async def _drive(self, agent: Agent, context: Context) -> Result:
-        """The loop shared by ``run`` and ``resume``: model, then tools, repeat.
+    async def _drive(self, agent: Agent, context: Context, ctx: RunContext) -> Result:
+        """The loop shared by ``run`` and ``resume``: turn after turn until terminal.
 
-        Threads a fresh immutable ``context`` each step from the given starting
-        point until a terminal Result — so ``run`` (fresh context) and ``resume``
-        (context + the human's answer) share one source of loop truth.
+        Each turn runs through the turn-point of the onion; a turn either proposes a
+        fresh Context to continue from or returns a terminal Result.
         """
         tools_by_name = {tool.spec.name: tool for tool in agent.tools}
+        # The effective chain enforces the agent's permissions around any
+        # caller-supplied middleware, so permission policy is always applied while
+        # still using the single onion mechanism (it is a no-op at non-tool points).
+        chain = (PermissionMiddleware(agent.permissions), *self.middleware)
         while True:
             if context.turn >= self.max_turns:
                 return Blocked(
                     reason=f"exceeded max_turns ({self.max_turns})",
                     context=context,
                 )
-            response = await agent.model.complete(
-                system=agent.instructions,
-                messages=context.messages,
-                tools=tuple(tool.spec for tool in agent.tools),
-            )
-            context = replace(
-                context,
-                messages=(*context.messages, response.message),
-                turn=context.turn + 1,
-            )
-
-            calls = [
-                block
-                for block in response.message.content
-                if isinstance(block, ToolUseBlock)
-            ]
-            if response.stop_reason != "tool_use" or not calls:
-                return Completed(
-                    output=_final_text(response.message),
-                    context=context,
-                )
-
-            try:
-                result_blocks, blocked = await self._dispatch(
-                    calls, tools_by_name, agent.permissions
-                )
-            except PauseRequested as pause:
-                # A cooperating tool asked to pause for human input. ``ask_human``
-                # must be the sole call in its turn so exactly one tool_use is left
-                # unanswered — the pairing ``resume`` answers. Reject the mixed
-                # turn loudly rather than building a half-answered conversation.
-                if len(calls) != 1:
-                    return Blocked(
-                        reason="ask_human must be the sole tool call in its turn",
-                        context=context,
-                    )
-                return NeedsHuman(
-                    question=pause.question,
-                    paused=Paused(context=context, pending_tool_use_id=calls[0].id),
-                )
-            if blocked is not None:
-                return Blocked(reason=blocked, context=context)
-            context = replace(
-                context,
-                messages=(
-                    *context.messages,
-                    Message(role="user", content=tuple(result_blocks)),
+            current = context
+            outcome = await apply(
+                chain,
+                TurnPoint(current),
+                lambda current=current: self._one_turn(
+                    agent, current, tools_by_name, chain, ctx
                 ),
             )
+            if isinstance(outcome, Context):
+                context = outcome
+                continue
+            return cast(Result, outcome)
+
+    async def _one_turn(
+        self,
+        agent: Agent,
+        context: Context,
+        tools_by_name: dict[str, Tool],
+        chain: tuple[Middleware, ...],
+        ctx: RunContext,
+    ) -> Context | Result:
+        """Run one turn: compact, call the model, dispatch any tools.
+
+        Returns a fresh Context to continue from, or a terminal Result.
+        """
+        # Pre-model point: a compactor may propose a trimmed Context here.
+        context = cast(
+            Context,
+            await apply(
+                chain,
+                PreModelPoint(context),
+                lambda: _just(context),
+            ),
+        )
+        tool_specs = tuple(tool.spec for tool in agent.tools)
+        # Model-call point.
+        response = cast(
+            ModelResponse,
+            await apply(
+                chain,
+                ModelPoint(context, tool_specs),
+                lambda: agent.model.complete(
+                    system=agent.instructions,
+                    messages=context.messages,
+                    tools=tool_specs,
+                ),
+            ),
+        )
+        context = replace(
+            context,
+            messages=(*context.messages, response.message),
+            turn=context.turn + 1,
+        )
+
+        calls = [
+            block
+            for block in response.message.content
+            if isinstance(block, ToolUseBlock)
+        ]
+        if response.stop_reason.kind != "tool_use" or not calls:
+            terminal = _terminal(response, context)
+            # Typed-output gate: a Completed whose text fails the declared
+            # output_type is not terminal — feed the validation error back and let
+            # the model self-correct on the next turn (bounded by max_turns).
+            if isinstance(terminal, Completed) and agent.output_type is not None:
+                error = validate_output(agent.output_type, terminal.output)
+                if error is not None:
+                    return replace(
+                        context,
+                        messages=(
+                            *context.messages,
+                            Message(role="user", content=(TextBlock(error),)),
+                        ),
+                    )
+            return terminal
+
+        try:
+            result_blocks, blocked = await self._dispatch(
+                calls, tools_by_name, chain, ctx
+            )
+        except PauseRequested as pause:
+            # A tool — ``ask_human`` or a permission ``ask`` — asked to pause for
+            # human input. It must be the sole call in its turn so exactly one
+            # tool_use is left unanswered — the pairing ``resume`` answers. Reject
+            # the mixed turn loudly rather than building a half-answered conversation.
+            if len(calls) != 1:
+                return Blocked(
+                    reason="ask_human must be the sole tool call in its turn",
+                    context=context,
+                )
+            return NeedsHuman(
+                question=pause.question,
+                paused=Paused(context=context, pending_tool_use_id=calls[0].id),
+            )
+        except PermissionDenied as denied:
+            # A ``deny`` rule matched: end the run, not recoverable by the model.
+            return Blocked(reason=denied.reason, context=context)
+        if blocked is not None:
+            return Blocked(reason=blocked, context=context)
+        return replace(
+            context,
+            messages=(
+                *context.messages,
+                Message(role="user", content=tuple(result_blocks)),
+            ),
+        )
 
     async def _dispatch(
         self,
         calls: list[ToolUseBlock],
         tools_by_name: dict[str, Tool],
-        permissions: Permissions,
+        chain: tuple[Middleware, ...],
+        ctx: RunContext,
     ) -> tuple[list[ToolResultBlock], str | None]:
-        """Run each requested tool call, enforcing permissions.
+        """Run each requested tool call through the tool-call onion.
 
         Returns the tool-result blocks to feed back to the model, plus an optional
-        block reason. A denied permission or an unknown tool ends the run
-        (``Blocked``). An exception *raised* by a tool is folded into an error
-        result so the model can recover, rather than aborting the run — except
-        ``PauseRequested``, a cooperating tool's control signal, which propagates
-        to the loop to pause the run.
+        block reason. An unknown tool ends the run (``Blocked``). Permission policy
+        is enforced by the permission middleware at the tool-call point (a ``deny``
+        raises ``PermissionDenied``, an ``ask`` raises ``PauseRequested``); a tool
+        that *raises* otherwise is folded into an error result the model can recover
+        from.
         """
         result_blocks: list[ToolResultBlock] = []
         for call in calls:
-            if not _is_permitted(permissions, call.name):
-                return result_blocks, f"permission denied for tool {call.name!r}"
             tool = tools_by_name.get(call.name)
             if tool is None:
                 return result_blocks, f"unknown tool {call.name!r}"
-            try:
-                outcome = await tool(call.input)
-            except PauseRequested:
-                raise
-            except Exception as exc:
-                outcome = ToolResult(
-                    content=f"tool {call.name!r} raised: {exc!r}", is_error=True
-                )
+            outcome = await self._invoke_tool(tool, call, chain, ctx)
             result_blocks.append(
                 ToolResultBlock(
                     tool_use_id=call.id,
@@ -205,3 +307,42 @@ class Runtime:
                 )
             )
         return result_blocks, None
+
+    async def _invoke_tool(
+        self,
+        tool: Tool,
+        call: ToolUseBlock,
+        chain: tuple[Middleware, ...],
+        ctx: RunContext,
+    ) -> ToolResult:
+        """Invoke one tool through the tool-call point.
+
+        The onion runs first (so permission ``deny``/``ask`` pre-empt the call);
+        the core then validates typed arguments and runs the tool with the run
+        handle ``ctx``, folding a raised exception into an error result
+        (``PauseRequested`` excepted — it propagates).
+        """
+
+        async def _core() -> ToolResult:
+            args_model = tool.spec.args_model
+            if args_model is not None:
+                error = validate_tool_args(args_model, call.input)
+                if error is not None:
+                    # Typed-args gate: a mismatch becomes a self-correctable error
+                    # result; the tool is not run with invalid arguments.
+                    return ToolResult(content=error, is_error=True)
+            try:
+                return await tool(ctx, call.input)
+            except PauseRequested:
+                raise
+            except Exception as exc:
+                return ToolResult(
+                    content=f"tool {call.name!r} raised: {exc!r}", is_error=True
+                )
+
+        return cast(ToolResult, await apply(chain, ToolPoint(call), _core))
+
+
+# ``Runtime`` is the former name of ``Engine``; kept as an alias while call sites in
+# the harness, console, tools, and scenarios migrate. Removed in the final sweep.
+Runtime = Engine

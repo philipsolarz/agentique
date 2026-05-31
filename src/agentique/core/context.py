@@ -16,7 +16,7 @@ Two deliberate simplifications, flagged for review:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic.dataclasses import dataclass
 
 from agentique.core.messages import Message
 

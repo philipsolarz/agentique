@@ -49,14 +49,6 @@ def test_clean_text_run_is_silent() -> None:
     assert anomalies == ()
 
 
-def test_unhandled_stop_reason_is_flagged_with_turn_locator() -> None:
-    anomalies = detect_anomalies([_model("max_tokens")], Completed("", _CTX))
-    assert any(
-        a.startswith("turn 1:") and "max_tokens" in a and "no explicit handling" in a
-        for a in anomalies
-    )
-
-
 def test_tool_error_result_is_flagged() -> None:
     events = [
         _model("tool_use", blocks=(ContentBlockSummary("tool_use", 8),)),
@@ -116,6 +108,8 @@ def test_max_turns_block_is_flagged() -> None:
     assert any("turn limit" in a for a in anomalies)
 
 
-def test_standing_notes_carry_the_static_limitations() -> None:
-    notes = standing_notes()
-    assert any("usage is not capturable" in n for n in notes)
+def test_standing_notes_are_empty_after_the_gaps_closed() -> None:
+    # The realignment closed both standing gaps: the Runtime now surfaces unhandled
+    # stop reasons explicitly, and ModelResponse carries usage. No standing note
+    # remains — in particular the old "usage is not capturable" note is gone.
+    assert standing_notes() == ()

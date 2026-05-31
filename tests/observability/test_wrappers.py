@@ -12,6 +12,7 @@ from collections.abc import Mapping
 import pytest
 
 from agentique.core import Agent, Runtime
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 from agentique.testing import EchoTool, StubModel, StubModelExhausted
 from observability.events import ModelCallEvent, ToolCallEvent
@@ -77,14 +78,16 @@ async def test_raised_inner_tool_is_recorded_then_reraised() -> None:
         def spec(self) -> ToolSpec:
             return ToolSpec(name="boom", description="", input_schema={})
 
-        async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+        async def __call__(
+            self, ctx: RunContext, arguments: Mapping[str, object]
+        ) -> ToolResult:
             raise RuntimeError("boom")
 
     recorder = InMemoryRecorder()
     tool = RecordingTool(_BoomTool(), recorder)
 
     with pytest.raises(RuntimeError):
-        await tool({"x": 1})
+        await tool(RunContext.for_test(), {"x": 1})
 
     assert len(recorder.events) == 1
     event = recorder.events[0]
@@ -100,7 +103,7 @@ async def test_argument_snapshot_survives_post_call_mutation() -> None:
     tool = RecordingTool(EchoTool(), recorder)
 
     arguments: dict[str, object] = {"value": "original"}
-    await tool(arguments)
+    await tool(RunContext.for_test(), arguments)
     arguments["value"] = "mutated"
     arguments["added"] = True
 
@@ -117,14 +120,16 @@ async def test_latency_spans_only_the_inner_await() -> None:
         def spec(self) -> ToolSpec:
             return ToolSpec(name="slow", description="", input_schema={})
 
-        async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+        async def __call__(
+            self, ctx: RunContext, arguments: Mapping[str, object]
+        ) -> ToolResult:
             await asyncio.sleep(delay)
             return ToolResult(content="ok")
 
     recorder = InMemoryRecorder()
     tool = RecordingTool(_SlowTool(), recorder)
 
-    await tool({})
+    await tool(RunContext.for_test(), {})
 
     event = recorder.events[0]
     assert isinstance(event, ToolCallEvent)

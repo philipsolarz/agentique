@@ -7,7 +7,11 @@ requires-python = ">=3.12"
 authors = [
     { name = "Philip Solarz", email = "philipsolarz@outlook.com" },
 ]
-dependencies = []
+# Pydantic is the one approved *base* third-party dependency: it backs the neutral
+# IR, typed I/O, the durable (serializable) pause/resume snapshot, and the typed
+# event vocabulary. Provider SDKs (anthropic) and telemetry exporters (OTel) stay
+# behind extras so `pip install agentique` never pulls a model vendor's SDK.
+dependencies = ["pydantic>=2"]
 
 [project.optional-dependencies]
 # The Anthropic provider (agentique.anthropic) is the only submodule that imports

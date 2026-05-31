@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 from agentique.tools.workspace import Workspace, WorkspaceError
 
@@ -47,7 +48,9 @@ class WriteFile:
             },
         )
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         path = arguments.get("path")
         content = arguments.get("content")
         if not isinstance(path, str):

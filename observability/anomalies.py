@@ -31,10 +31,6 @@ from observability.events import (
     group_into_turns,
 )
 
-# stop_reasons the Runtime loop acts on explicitly (runtime.py:97). Every other
-# value is silently folded into a terminal ``Completed``.
-_HANDLED_STOP_REASONS = frozenset({"tool_use", "end_turn"})
-
 
 def detect_anomalies(
     events: Sequence[CallEvent],
@@ -60,11 +56,15 @@ def detect_anomalies(
 
 def standing_notes() -> tuple[str, ...]:
     """Framework-wide limitations that hold identically for every run. Emitted once
-    in the cross-scenario summary, not repeated per digest."""
-    return (
-        "usage is not capturable without a contract change: ModelResponse carries "
-        "no usage and the Anthropic converter drops it (anthropic/model.py:107)",
-    )
+    in the cross-scenario summary, not repeated per digest.
+
+    Empty since the realignment closed the two standing gaps this layer used to
+    flag: the Runtime now surfaces unhandled stop reasons explicitly (no silent
+    fold into ``Completed``), and ``ModelResponse`` carries :class:`Usage` that the
+    Anthropic adapter populates — so neither is a limitation any more. Kept as the
+    seam for any future framework-wide note.
+    """
+    return ()
 
 
 def _model_anomalies(number: int, event: ModelCallEvent) -> list[str]:
@@ -74,11 +74,6 @@ def _model_anomalies(number: int, event: ModelCallEvent) -> list[str]:
         found.append(f"turn {number}: model call raised {event.raised}")
         return found
 
-    if event.stop_reason not in _HANDLED_STOP_REASONS:
-        found.append(
-            f"turn {number}: stop_reason '{event.stop_reason}' is folded into a "
-            "terminal Completed; the Runtime has no explicit handling (runtime.py:97)"
-        )
     if not event.blocks:
         found.append(f"turn {number}: model returned no content blocks")
     if event.stop_reason == "tool_use" and not any(

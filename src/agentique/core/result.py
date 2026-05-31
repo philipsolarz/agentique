@@ -10,7 +10,7 @@ terminal Context for inspection or forking; ``NeedsHuman`` carries a resumable
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic.dataclasses import dataclass
 
 from agentique.core.context import Context
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from agentique.core.messages import (
     Message,
     ModelResponse,
+    StopKind,
     StopReason,
     TextBlock,
     ToolUseBlock,
@@ -51,11 +52,17 @@ class StubModel:
         self.calls: list[StubCall] = []
 
     @staticmethod
-    def text(text: str, stop_reason: StopReason = "end_turn") -> ModelResponse:
-        """Build a single text response — a convenience for scripting runs."""
+    def text(
+        text: str, *, kind: StopKind = "done", raw: str | None = None
+    ) -> ModelResponse:
+        """Build a single text response — a convenience for scripting runs.
+
+        Defaults to a normal ``done`` completion; pass ``kind`` (and optionally a
+        ``raw`` vendor string) to script a ``length``/``refusal``/``other`` stop.
+        """
         return ModelResponse(
             message=Message(role="assistant", content=(TextBlock(text),)),
-            stop_reason=stop_reason,
+            stop_reason=StopReason(kind=kind, raw=raw if raw is not None else kind),
         )
 
     @staticmethod
@@ -68,7 +75,7 @@ class StubModel:
                 role="assistant",
                 content=(ToolUseBlock(id=tool_id, name=name, input=arguments),),
             ),
-            stop_reason="tool_use",
+            stop_reason=StopReason(kind="tool_use", raw="tool_use"),
         )
 
     async def complete(

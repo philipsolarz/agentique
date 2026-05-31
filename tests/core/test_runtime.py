@@ -32,3 +32,20 @@ async def test_zero_max_turns_blocks_before_calling_model() -> None:
     assert isinstance(result, Blocked)
     assert "max_turns" in result.reason
     assert result.context.turn == 0
+
+
+async def test_length_stop_reason_completes_with_text() -> None:
+    # A modeled terminal reason (hit the token cap) still completes on its text.
+    agent = _agent(StubModel([StubModel.text("partial", kind="length")]))
+    result = await Runtime().run(agent, prompt="go")
+    assert isinstance(result, Completed)
+    assert result.output == "partial"
+
+
+async def test_unhandled_stop_reason_blocks_rather_than_silently_completing() -> None:
+    # A reason the core cannot act on must surface as Blocked (carrying the raw
+    # vendor string), never fold quietly into Completed.
+    agent = _agent(StubModel([StubModel.text("", kind="other", raw="weird_reason")]))
+    result = await Runtime().run(agent, prompt="go")
+    assert isinstance(result, Blocked)
+    assert "weird_reason" in result.reason

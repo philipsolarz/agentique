@@ -10,6 +10,7 @@ from agentique.core import (
     ModelResponse,
     NeedsHuman,
     Runtime,
+    StopReason,
 )
 from agentique.core.messages import ToolResultBlock, ToolUseBlock
 from agentique.core.tool import Tool
@@ -113,7 +114,7 @@ async def test_ask_human_mixed_with_another_call_is_blocked() -> None:
                         ),
                     ),
                 ),
-                stop_reason="tool_use",
+                stop_reason=StopReason(kind="tool_use", raw="tool_use"),
             ),
         ]
     )

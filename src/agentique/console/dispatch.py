@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from agentique import Coordinator
+from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 
 
@@ -57,7 +58,9 @@ class Dispatch:
             },
         )
 
-    async def __call__(self, arguments: Mapping[str, object]) -> ToolResult:
+    async def __call__(
+        self, ctx: RunContext, arguments: Mapping[str, object]
+    ) -> ToolResult:
         role = arguments.get("role")
         task = arguments.get("task")
         if not isinstance(role, str):

@@ -19,6 +19,7 @@ from agentique.core import (
     NeedsHuman,
     Paused,
     Result,
+    StopReason,
     TextBlock,
 )
 from agentique.core.tool import ToolSpec
@@ -36,14 +37,15 @@ class _FakeModel:
     ) -> ModelResponse:
         return ModelResponse(
             message=Message(role="assistant", content=(TextBlock("ok"),)),
-            stop_reason="end_turn",
+            stop_reason=StopReason(kind="done", raw="end_turn"),
         )
 
 
 def test_agent_accepts_structural_model() -> None:
     agent = Agent(name="t", instructions="i", model=_FakeModel())
     assert agent.tools == ()
-    assert agent.permissions.allowed_tools is None
+    # default permissions permit every tool the agent holds
+    assert agent.permissions.decide("anything", {}) == "allow"
 
 
 def _describe(result: Result) -> str:
