@@ -24,3 +24,8 @@ class Memory(Protocol):
     async def set(self, key: str, value: str) -> None:
         """Durably associate ``value`` with ``key``."""
         ...
+
+    async def delete(self, key: str) -> None:
+        """Remove ``key`` and its value. Idempotent: deleting an absent key is a
+        no-op."""
+        ...

@@ -42,6 +42,17 @@ async def test_set_overwrites(store: Memory) -> None:
     assert await store.get("k") == "second"
 
 
+async def test_delete_removes_a_key(store: Memory) -> None:
+    await store.set("k", "v")
+    await store.delete("k")
+    assert await store.get("k") is None
+
+
+async def test_delete_absent_key_is_a_noop(store: Memory) -> None:
+    await store.delete("absent")  # idempotent: must not raise
+    assert await store.get("absent") is None
+
+
 async def test_file_store_is_durable_across_instances(tmp_path: Path) -> None:
     path = tmp_path / "mem.json"
     await FileStore(path).set("k", "persisted")

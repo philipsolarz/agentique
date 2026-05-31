@@ -157,7 +157,7 @@ class Store:
 
     async def get_paused_run(self, run_id: str) -> PausedRun | None:
         raw = await self._memory.get(f"pausedrun:{run_id}")
-        if not raw:  # absent, or a "" tombstone left by delete_paused_run
+        if raw is None:
             return None
         data = json.loads(raw)
         return PausedRun(
@@ -182,7 +182,7 @@ class Store:
         A no-op if there is none."""
         if await self._memory.get(f"pausedrun:{run_id}") is None:
             return
-        await self._memory.set(f"pausedrun:{run_id}", "")
+        await self._memory.delete(f"pausedrun:{run_id}")
         keys = [k for k in await self._index("pausedruns") if k != run_id]
         await self._memory.set("index:pausedruns", json.dumps(keys))
 

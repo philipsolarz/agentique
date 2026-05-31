@@ -50,3 +50,11 @@ class FileStore:
             self._store(data)
 
         await asyncio.to_thread(_mutate)
+
+    async def delete(self, key: str) -> None:
+        def _mutate() -> None:
+            data = self._load()
+            if data.pop(key, None) is not None:  # absent key is a no-op
+                self._store(data)
+
+        await asyncio.to_thread(_mutate)

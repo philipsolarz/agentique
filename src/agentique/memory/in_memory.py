@@ -20,3 +20,6 @@ class InMemoryStore:
 
     async def set(self, key: str, value: str) -> None:
         self._data[key] = value
+
+    async def delete(self, key: str) -> None:
+        self._data.pop(key, None)  # idempotent: absent key is a no-op
