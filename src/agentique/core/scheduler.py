@@ -93,11 +93,10 @@ class Scheduler:
     def restore(self, run: Run) -> None:
         """Re-seat a paused ``run`` loaded from durable storage into a fresh
         Scheduler, so ``resume(run.id, …)`` can continue it. The matching agent must
-        be (re-)registered under ``run.agent_id`` first. Keeps the run-id counter
-        ahead of restored ids so a new dispatch cannot collide with one."""
+        be (re-)registered under ``run.agent_id`` first. The restored id lands in the
+        run map, which ``_next_run_id`` skips — so a later dispatch cannot collide
+        with it, with no dependence on the id string format."""
         self._runs[run.id] = run
-        if run.id.startswith("r") and run.id[1:].isdigit():
-            self._run_seq = max(self._run_seq, int(run.id[1:]))
 
     def run(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
@@ -129,14 +128,24 @@ class Scheduler:
         self._record(run_id, run.agent_id, run.parent_id, result)
         return result
 
+    def _next_run_id(self) -> str:
+        """Mint a fresh run id. The one place the id format is defined — advance the
+        counter until the candidate is unused in the run map, so an id restored from
+        durable storage (whatever its format) can never be reissued. Collision-safety
+        checks membership, never the id string."""
+        while True:
+            self._run_seq += 1
+            run_id = f"r{self._run_seq}"
+            if run_id not in self._runs:
+                return run_id
+
     async def _dispatch(
         self, agent_id: str, prompt: str, *, parent_id: str | None
     ) -> Dispatched:
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(f"no agent {agent_id!r}")
-        self._run_seq += 1
-        run_id = f"r{self._run_seq}"
+        run_id = self._next_run_id()
         self._sink.emit(Dispatch(run_id=run_id, parent_id=parent_id, agent_id=agent_id))
         # Record the run as running before driving it, so lineage exists even while
         # a child is dispatched mid-run.

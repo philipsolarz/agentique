@@ -8,6 +8,7 @@ from agentique.core import (
     Blocked,
     Completed,
     NeedsHuman,
+    Run,
     Scheduler,
 )
 from agentique.testing import CollectingSink, StubModel
@@ -72,6 +73,19 @@ async def test_pause_then_resume_by_id_completes() -> None:
     assert resumed.output == "done"
     updated = sched.run(run.id)
     assert updated is not None and updated.state == "done"
+
+
+async def test_dispatch_after_restore_does_not_reuse_a_restored_run_id() -> None:
+    sched = Scheduler()
+    sched.register("a", _agent("a", StubModel.text("hi")))
+    # Seat a restored run occupying the id a fresh dispatch would otherwise mint
+    # first. The guard is format-agnostic: we assert only that no id is reused.
+    restored = Run(id="r1", agent_id="a", state="done")
+    sched.restore(restored)
+
+    dispatched = await sched.dispatch("a", "go")
+    assert dispatched.run_id != "r1"  # the restored id was not reissued
+    assert sched.run("r1") == restored  # and the restored run is untouched
 
 
 async def test_resume_unknown_or_not_paused_raises() -> None:
