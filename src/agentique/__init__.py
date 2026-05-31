@@ -18,19 +18,23 @@ Satellites of the core framework live in their own submodules:
 optional :mod:`agentique.anthropic` provider (behind the ``anthropic`` extra).
 """
 
-from agentique.artifact import Artifact, ArtifactStatus
+from agentique.artifact import Artifact, ArtifactStatus, TextPayload, payload_text
 from agentique.coordinator import Coordinator
 from agentique.role import Role
-from agentique.session import Session, SessionRecord, SessionState
-from agentique.store import Store
+from agentique.session import PausedRun, Session, SessionRecord, SessionState
+from agentique.store import KindRegistry, Store
 
 __all__ = [
     "Artifact",
     "ArtifactStatus",
     "Coordinator",
+    "KindRegistry",
+    "PausedRun",
     "Role",
     "Session",
     "SessionRecord",
     "SessionState",
     "Store",
+    "TextPayload",
+    "payload_text",
 ]

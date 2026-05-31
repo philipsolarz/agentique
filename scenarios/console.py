@@ -20,7 +20,7 @@ from agentique.console.agents import build_orchestrator
 from agentique.console.cli import load_env
 from agentique.console.console import Console
 from agentique.console.fleet import build_fleet
-from agentique.core import Model, Result, Runtime
+from agentique.core import Engine, Model, Result, Runtime, Scheduler
 from agentique.tools import Workspace
 from observability import (
     InMemoryRecorder,
@@ -49,7 +49,7 @@ def wire(
     """
     recorder = InMemoryRecorder()
     workspace = Workspace(workspace_root)
-    coordinator = Coordinator(runtime=Runtime(max_turns=24))
+    coordinator = Coordinator(scheduler=Scheduler(engine=Engine(max_turns=24)))
     for role in build_fleet(
         fleet_model if fleet_model is not None else model, workspace
     ):

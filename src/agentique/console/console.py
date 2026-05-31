@@ -22,11 +22,13 @@ from agentique.core import (
     Blocked,
     Completed,
     Context,
+    Engine,
     Model,
     NeedsHuman,
     Paused,
     Result,
     Runtime,
+    Scheduler,
     TextBlock,
 )
 from agentique.tools import Workspace
@@ -144,7 +146,9 @@ def build_console(
     ``specialist_max_turns`` budget for its act-and-verify loop.
     """
     workspace = Workspace(workspace_root)
-    coordinator = Coordinator(runtime=Runtime(max_turns=specialist_max_turns))
+    coordinator = Coordinator(
+        scheduler=Scheduler(engine=Engine(max_turns=specialist_max_turns))
+    )
     for role in build_fleet(
         fleet_model if fleet_model is not None else model, workspace
     ):

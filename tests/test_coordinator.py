@@ -5,7 +5,7 @@ Exercised offline with StubModel / ask_human.
 
 import pytest
 
-from agentique import Coordinator
+from agentique import Coordinator, TextPayload
 from agentique.core import Agent, ModelResponse
 from agentique.testing import StubModel
 from agentique.tools import AskHuman
@@ -29,7 +29,7 @@ async def test_dispatch_completes_into_a_proposed_artifact() -> None:
     assert session.state == "done"
     assert session.artifact is not None
     assert session.artifact.kind == "plan"
-    assert session.artifact.payload == "the plan"
+    assert session.artifact.payload == TextPayload(text="the plan")
     assert session.artifact.status == "proposed"
     # it converged in the shared store, not just on the session.
     assert await coord.store.get_artifact(session.artifact.id) == session.artifact
@@ -50,7 +50,7 @@ async def test_dispatch_pauses_then_resume_by_id_completes() -> None:
     assert done.id == paused.id  # the same session, resumed by id
     assert done.state == "done"
     assert done.artifact is not None
-    assert done.artifact.payload == "planned around notes.txt"
+    assert done.artifact.payload == TextPayload(text="planned around notes.txt")
 
 
 async def test_resume_unknown_session_raises() -> None:
@@ -109,6 +109,18 @@ async def test_promote_artifact_to_application_defined_status() -> None:
 async def test_promote_unknown_artifact_raises() -> None:
     with pytest.raises(KeyError, match="no artifact"):
         await Coordinator().promote_artifact("nope", "approved")
+
+
+async def test_run_state_lives_on_the_scheduler() -> None:
+    # The Coordinator is demoted: it keeps the work-product projection, but the run
+    # state is owned by the core Scheduler and addressed by the session id.
+    coord = Coordinator()
+    session = await coord.dispatch(_planner(StubModel.text("p")), "go", kind="plan")
+    run = coord.scheduler.run(session.id)
+    assert run is not None
+    assert run.state == "done"
+    assert run.agent_id == session.agent_id
+    assert run.parent_id is None
 
 
 async def test_two_sessions_get_distinct_ids() -> None:

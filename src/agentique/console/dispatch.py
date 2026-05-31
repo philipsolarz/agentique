@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from agentique import Coordinator
+from agentique import Coordinator, payload_text
 from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 
@@ -83,6 +83,6 @@ class Dispatch:
             content=(
                 f"{role} produced a proposed {artifact.kind} artifact "
                 f"{artifact.id}. The operator can /approve or /reject it.\n\n"
-                f"{artifact.payload[:400]}"
+                f"{payload_text(artifact.payload)[:400]}"
             )
         )

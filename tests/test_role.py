@@ -6,7 +6,7 @@ the role's kind. Exercised offline with StubModel.
 
 import pytest
 
-from agentique import Coordinator, Role
+from agentique import Coordinator, Role, TextPayload
 from agentique.core import Agent
 from agentique.testing import StubModel
 
@@ -37,7 +37,7 @@ async def test_register_and_dispatch_role_by_name() -> None:
     assert session.state == "done"
     assert session.artifact is not None
     assert session.artifact.kind == "plan"
-    assert session.artifact.payload == "the plan"
+    assert session.artifact.payload == TextPayload(text="the plan")
 
 
 def test_registry_accessors() -> None:

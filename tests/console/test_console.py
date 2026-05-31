@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from agentique import payload_text
 from agentique.console.console import Console, build_console
 from agentique.testing import StubModel
 
@@ -42,7 +43,7 @@ async def test_orchestrator_dispatches_planner_then_pauses_for_approval() -> Non
     assert len(artifacts) == 1
     assert artifacts[0].kind == "plan"
     assert artifacts[0].status == "proposed"
-    assert "Make the board" in artifacts[0].payload
+    assert "Make the board" in payload_text(artifacts[0].payload)
 
     approved = await console.approve(artifacts[0].id)
     assert approved.status == "approved"
@@ -84,7 +85,7 @@ async def test_builder_writes_into_the_workspace(tmp_path: Path) -> None:
     artifacts = await console.artifacts()
     assert len(artifacts) == 1
     assert artifacts[0].kind == "change"
-    assert "Built snake_game.html" in artifacts[0].payload
+    assert "Built snake_game.html" in payload_text(artifacts[0].payload)
 
 
 async def test_unknown_role_is_surfaced_not_dispatched() -> None:

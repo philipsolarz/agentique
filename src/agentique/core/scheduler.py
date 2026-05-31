@@ -77,6 +77,15 @@ class Scheduler:
         across a process restart, by re-registering under the same id)."""
         self._agents[agent_id] = agent
 
+    def restore(self, run: Run) -> None:
+        """Re-seat a paused ``run`` loaded from durable storage into a fresh
+        Scheduler, so ``resume(run.id, …)`` can continue it. The matching agent must
+        be (re-)registered under ``run.agent_id`` first. Keeps the run-id counter
+        ahead of restored ids so a new dispatch cannot collide with one."""
+        self._runs[run.id] = run
+        if run.id.startswith("r") and run.id[1:].isdigit():
+            self._run_seq = max(self._run_seq, int(run.id[1:]))
+
     def run(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
 

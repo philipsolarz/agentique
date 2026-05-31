@@ -12,6 +12,7 @@ import asyncio
 import os
 from pathlib import Path
 
+from agentique import payload_text
 from agentique.console.console import Console, build_console
 
 # Anthropic's fast tier; override with AGENTIQUE_MODEL. There is deliberately no
@@ -67,7 +68,7 @@ async def _converse(console: Console) -> None:
         try:
             if line == "/artifacts":
                 for artifact in await console.artifacts():
-                    preview = artifact.payload[:60].replace("\n", " ")
+                    preview = payload_text(artifact.payload)[:60].replace("\n", " ")
                     print(
                         f"  {artifact.id} [{artifact.status}] "
                         f"{artifact.kind}: {preview}"
