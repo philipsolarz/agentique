@@ -56,7 +56,7 @@ async def test_parent_delegates_and_gets_child_output() -> None:
     sched.register("child", _child_agent())
     sched.register("parent", parent)
 
-    result = await sched.dispatch("parent", "begin")
+    result = (await sched.dispatch("parent", "begin")).result
     assert isinstance(result, Completed)
     assert result.output == "parent done"
 
@@ -94,7 +94,7 @@ async def test_child_pause_propagates_as_a_real_parent_pause() -> None:
     sched.register("child", child)
     sched.register("parent", parent)
 
-    result = await sched.dispatch("parent", "begin")
+    result = (await sched.dispatch("parent", "begin")).result
     assert isinstance(result, NeedsHuman)  # not an error string — a real pause
     assert result.question == "which file?"
 
@@ -110,7 +110,7 @@ async def test_delegation_is_permission_gated_like_any_tool() -> None:
     sched.register("child", _child_agent())
     sched.register("parent", parent)
 
-    result = await sched.dispatch("parent", "begin")
+    result = (await sched.dispatch("parent", "begin")).result
     assert isinstance(result, Blocked)
     assert "permission denied" in result.reason
 

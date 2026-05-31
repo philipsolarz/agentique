@@ -51,6 +51,19 @@ class Run:
     parent_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Dispatched:
+    """The outcome of a dispatch, paired with the id of the run it created.
+
+    Returning the ``run_id`` alongside the ``result`` lets the Coordinator address
+    the exact run a dispatch produced instead of reverse-engineering it by diffing
+    the run set — a heuristic that only held while dispatch was synchronous.
+    """
+
+    run_id: str
+    result: Result
+
+
 class Scheduler:
     """Registers agents by id and dispatches runs between them over a sync bus."""
 
@@ -92,10 +105,14 @@ class Scheduler:
     def runs(self) -> tuple[Run, ...]:
         return tuple(self._runs.values())
 
-    async def dispatch(self, agent_id: str, prompt: str) -> Result:
-        """Dispatch a top-level run of ``agent_id`` on ``prompt`` to a Result."""
+    async def dispatch(self, agent_id: str, prompt: str) -> Dispatched:
+        """Dispatch a top-level run of ``agent_id`` on ``prompt``; return the created
+        run id paired with its Result, so the caller need not recover the run id."""
         return await self._dispatch(agent_id, prompt, parent_id=None)
 
+    # resume keeps returning a bare Result, not Dispatched: the caller already holds
+    # the run id it passed in, so there is nothing to recover — wrapping it would only
+    # churn the call sites. The asymmetry with dispatch is deliberate.
     async def resume(self, run_id: str, answer: str) -> Result:
         """Resume the paused run ``run_id``, folding the human's ``answer`` in."""
         run = self._runs.get(run_id)
@@ -114,7 +131,7 @@ class Scheduler:
 
     async def _dispatch(
         self, agent_id: str, prompt: str, *, parent_id: str | None
-    ) -> Result:
+    ) -> Dispatched:
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(f"no agent {agent_id!r}")
@@ -128,7 +145,15 @@ class Scheduler:
         )
         result = await self._engine.run(agent, prompt, ctx=self._context_for(run_id))
         self._record(run_id, agent_id, parent_id, result)
-        return result
+        return Dispatched(run_id=run_id, result=result)
+
+    async def _dispatch_child(
+        self, agent_id: str, prompt: str, *, parent_id: str | None
+    ) -> Result:
+        # The tool-facing dispatch handle returns only the child's Result: a tool
+        # needs the child's outcome, not its run id (which the Scheduler owns). The
+        # richer Dispatched return belongs to the Coordinator-facing ``dispatch``.
+        return (await self._dispatch(agent_id, prompt, parent_id=parent_id)).result
 
     def _context_for(self, run_id: str) -> RunContext:
         # The dispatch handle is bound to this run, so a child it spawns records
@@ -136,7 +161,7 @@ class Scheduler:
         return RunContext(
             run_id=run_id,
             emit=self._sink,
-            dispatch=partial(self._dispatch, parent_id=run_id),
+            dispatch=partial(self._dispatch_child, parent_id=run_id),
         )
 
     def _record(

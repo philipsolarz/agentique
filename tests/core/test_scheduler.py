@@ -26,13 +26,24 @@ def _agent(name: str, *responses, tools=()) -> Agent:
 async def test_dispatch_runs_a_registered_agent_and_records_the_run() -> None:
     sched = Scheduler()
     sched.register("a", _agent("a", StubModel.text("hi")))
-    result = await sched.dispatch("a", "go")
-    assert isinstance(result, Completed)
-    assert result.output == "hi"
+    dispatched = await sched.dispatch("a", "go")
+    assert isinstance(dispatched.result, Completed)
+    assert dispatched.result.output == "hi"
     run = next(iter(sched.runs()))
     assert run.state == "done"
     assert run.agent_id == "a"
     assert run.parent_id is None
+
+
+async def test_dispatch_returns_the_created_run_id() -> None:
+    sched = Scheduler()
+    sched.register("a", _agent("a", StubModel.text("hi")))
+    dispatched = await sched.dispatch("a", "go")
+    # the caller gets the run id directly — no diffing the run set to recover it.
+    run = sched.run(dispatched.run_id)
+    assert run is not None
+    assert run.id == dispatched.run_id
+    assert run.state == "done"
 
 
 async def test_dispatch_unknown_agent_raises() -> None:
@@ -52,7 +63,7 @@ async def test_pause_then_resume_by_id_completes() -> None:
         ),
     )
     paused = await sched.dispatch("a", "go")
-    assert isinstance(paused, NeedsHuman)
+    assert isinstance(paused.result, NeedsHuman)
     run = next(iter(sched.runs()))
     assert run.state == "paused"
 
@@ -80,7 +91,7 @@ async def test_blocked_run_is_recorded_blocked() -> None:
     # an unknown stop reason surfaces as Blocked
     sched.register("a", _agent("a", StubModel.text("", kind="other", raw="weird")))
     result = await sched.dispatch("a", "go")
-    assert isinstance(result, Blocked)
+    assert isinstance(result.result, Blocked)
     run = next(iter(sched.runs()))
     assert run.state == "blocked"
 

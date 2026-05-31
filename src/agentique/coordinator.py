@@ -166,18 +166,11 @@ class Coordinator:
     async def _launch(
         self, agent_id: str, prompt: str, kind: str, derived_from: tuple[str, ...]
     ) -> Session:
-        before = {run.id for run in self._scheduler.runs()}
-        result = await self._scheduler.dispatch(agent_id, prompt)
-        run = self._new_top_level_run(before)
-        return await self._finalize(run, agent_id, kind, result, derived_from)
-
-    def _new_top_level_run(self, before: set[str]) -> Run:
-        """The single top-level run this dispatch created (synchronous, so exactly
-        one new ``parent_id is None`` run exists since ``before``)."""
-        return next(
-            run
-            for run in self._scheduler.runs()
-            if run.parent_id is None and run.id not in before
+        dispatched = await self._scheduler.dispatch(agent_id, prompt)
+        run = self._scheduler.run(dispatched.run_id)
+        assert run is not None  # the dispatch just recorded this run
+        return await self._finalize(
+            run, agent_id, kind, dispatched.result, derived_from
         )
 
     async def _finalize(

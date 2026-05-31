@@ -58,7 +58,7 @@ from agentique.core.model import Model
 from agentique.core.result import Blocked, Completed, NeedsHuman, Paused, Result
 from agentique.core.run_context import Dispatcher, RunContext
 from agentique.core.runtime import Engine
-from agentique.core.scheduler import Run, RunState, Scheduler
+from agentique.core.scheduler import Dispatched, Run, RunState, Scheduler
 from agentique.core.tool import Tool, ToolResult, ToolSpec
 from agentique.core.validation import PydanticValidator, Validator
 
@@ -74,6 +74,7 @@ __all__ = [
     "ContentBlock",
     "Context",
     "Dispatch",
+    "Dispatched",
     "Dispatcher",
     "Effect",
     "Engine",
