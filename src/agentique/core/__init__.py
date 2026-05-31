@@ -1,11 +1,11 @@
 """Agentique core: the application-agnostic agent framework contracts.
 
-This package holds **only** the generic contracts an agent is built from — the
-seam Protocols (Model, Tool, Memory), the value types (messages, Context,
-Result, Agent, Permissions), and (from A3) the Runtime that drives them. It has
-**no third-party dependencies**: concrete seam implementations live in satellite
-packages (``agentique.anthropic``, ``agentique.testing``,
-…) that depend on this one.
+This package holds the execution + topology substrate an agent is built from — the
+seam Protocols (Model, Tool, Memory), the neutral-IR value types (messages, Context,
+Result, Agent, Permissions, events), the middleware onion, typed-I/O validation, the
+``Engine`` that drives a single agent, and the ``Scheduler`` that coordinates many.
+Its only third-party dependency is the approved base dep Pydantic; provider SDKs and
+telemetry exporters live in satellite packages behind extras.
 
 This module re-exports the public surface; submodules hold one primitive each.
 """
@@ -57,7 +57,7 @@ from agentique.core.middleware import (
 from agentique.core.model import Model
 from agentique.core.result import Blocked, Completed, NeedsHuman, Paused, Result
 from agentique.core.run_context import Dispatcher, RunContext
-from agentique.core.runtime import Engine, Runtime
+from agentique.core.runtime import Engine
 from agentique.core.scheduler import Run, RunState, Scheduler
 from agentique.core.tool import Tool, ToolResult, ToolSpec
 from agentique.core.validation import PydanticValidator, Validator
@@ -105,7 +105,6 @@ __all__ = [
     "Run",
     "RunContext",
     "RunState",
-    "Runtime",
     "Scheduler",
     "StopKind",
     "StopReason",

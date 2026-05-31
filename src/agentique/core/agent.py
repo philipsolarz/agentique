@@ -2,8 +2,8 @@
 
 An Agent is a *value*, not a runner. It declares a role/system prompt, one
 Model, the Tools it may use, and its permissions. It does not drive
-itself — the Runtime (A3) does. Keeping the Agent purely declarative means the
-same spec can be inspected, serialized, forked, or handed to different Runtimes.
+itself — the Engine does. Keeping the Agent purely declarative means the same spec
+can be inspected, serialized, forked, or handed to different Engines.
 """
 
 from __future__ import annotations

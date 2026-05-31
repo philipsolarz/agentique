@@ -1,9 +1,9 @@
 """A real tool: read a UTF-8 text file from the filesystem.
 
 Crosses the filesystem boundary, so it is a Tool and is subject to
-the Runtime's permission check. It is read-only and non-destructive. Failures
+the Engine's permission check. It is read-only and non-destructive. Failures
 (missing file, decode error, a path that is a directory) are returned as error
-results rather than raised, so the Runtime can feed them back to the model for
+results rather than raised, so the Engine can feed them back to the model for
 recovery instead of aborting the run.
 
 Given a :class:`~agentique.tools.workspace.Workspace`, reads are confined to it and

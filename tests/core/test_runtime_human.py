@@ -6,10 +6,10 @@ from agentique.core import (
     Agent,
     Blocked,
     Completed,
+    Engine,
     Message,
     ModelResponse,
     NeedsHuman,
-    Runtime,
     StopReason,
 )
 from agentique.core.messages import ToolResultBlock, ToolUseBlock
@@ -30,7 +30,7 @@ async def test_ask_human_pauses_then_resume_completes() -> None:
         ]
     )
     agent = _agent(model, AskHuman())
-    runtime = Runtime()
+    runtime = Engine()
 
     paused = await runtime.run(agent, prompt="go")
     assert isinstance(paused, NeedsHuman)
@@ -64,7 +64,7 @@ async def test_resume_does_not_replay_prior_side_effecting_tools() -> None:
         ]
     )
     agent = _agent(model, echo, AskHuman())
-    runtime = Runtime()
+    runtime = Engine()
 
     paused = await runtime.run(agent, prompt="go")
     assert isinstance(paused, NeedsHuman)
@@ -84,7 +84,7 @@ async def test_resume_can_pause_again() -> None:
         ]
     )
     agent = _agent(model, AskHuman())
-    runtime = Runtime()
+    runtime = Engine()
 
     first = await runtime.run(agent, prompt="go")
     assert isinstance(first, NeedsHuman)
@@ -119,7 +119,7 @@ async def test_ask_human_mixed_with_another_call_is_blocked() -> None:
         ]
     )
     agent = _agent(model, EchoTool(), AskHuman())
-    result = await Runtime().run(agent, prompt="go")
+    result = await Engine().run(agent, prompt="go")
     assert isinstance(result, Blocked)
     assert "sole tool call" in result.reason
 
@@ -135,7 +135,7 @@ async def test_two_runs_pause_and_resume_independently() -> None:
             ]
         )
 
-    runtime = Runtime()
+    runtime = Engine()
     a = _agent(_m("qa", "done-a"), AskHuman())
     b = _agent(_m("qb", "done-b"), AskHuman())
 

@@ -117,7 +117,7 @@ class RecordingTool:
         self, ctx: RunContext, arguments: Mapping[str, object]
     ) -> ToolResult:
         tool_name = self._inner.spec.name
-        # Snapshot the inputs before the call so neither the tool nor the Runtime
+        # Snapshot the inputs before the call so neither the tool nor the Engine
         # can change what we recorded by reusing or mutating the mapping afterward.
         arguments_snapshot = dict(arguments)
 

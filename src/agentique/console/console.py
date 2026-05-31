@@ -27,7 +27,6 @@ from agentique.core import (
     NeedsHuman,
     Paused,
     Result,
-    Runtime,
     Scheduler,
     TextBlock,
 )
@@ -64,11 +63,11 @@ class Console:
         orchestrator: Agent,
         *,
         coordinator: Coordinator | None = None,
-        runtime: Runtime | None = None,
+        engine: Engine | None = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._coordinator = coordinator if coordinator is not None else Coordinator()
-        self._runtime = runtime if runtime is not None else Runtime()
+        self._engine = engine if engine is not None else Engine()
         self._paused: Paused | None = None
         self._done = False
         self._last_result: Result | None = None
@@ -91,9 +90,9 @@ class Console:
         if self._done:
             raise RuntimeError("the conversation has ended")
         if self._paused is None:
-            result = await self._runtime.run(self._orchestrator, text)
+            result = await self._engine.run(self._orchestrator, text)
         else:
-            result = await self._runtime.resume(self._orchestrator, self._paused, text)
+            result = await self._engine.resume(self._orchestrator, self._paused, text)
         return self._handle(result)
 
     def _handle(self, result: Result) -> Turn:
@@ -155,5 +154,5 @@ def build_console(
         coordinator.register_role(role)
     orchestrator = build_orchestrator(model, coordinator)
     return Console(
-        orchestrator, coordinator=coordinator, runtime=Runtime(max_turns=max_turns)
+        orchestrator, coordinator=coordinator, engine=Engine(max_turns=max_turns)
     )

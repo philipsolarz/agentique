@@ -1,6 +1,6 @@
-"""The Runtime loop, exercised offline with a private inline Model stub."""
+"""The Engine loop, exercised offline with a private inline Model stub."""
 
-from agentique.core import Agent, Blocked, Completed, Runtime
+from agentique.core import Agent, Blocked, Completed, Engine
 from agentique.testing import StubModel
 
 
@@ -10,14 +10,14 @@ def _agent(model: StubModel) -> Agent:
 
 async def test_single_turn_completes_with_text() -> None:
     agent = _agent(StubModel([StubModel.text("the answer is 42")]))
-    result = await Runtime().run(agent, prompt="what is the answer?")
+    result = await Engine().run(agent, prompt="what is the answer?")
     assert isinstance(result, Completed)
     assert result.output == "the answer is 42"
 
 
 async def test_completed_context_records_the_exchange() -> None:
     agent = _agent(StubModel([StubModel.text("hi")]))
-    result = await Runtime().run(agent, prompt="hello")
+    result = await Engine().run(agent, prompt="hello")
     assert isinstance(result, Completed)
     # one user prompt + one assistant reply, and exactly one model call (turn).
     assert result.context.turn == 1
@@ -28,7 +28,7 @@ async def test_completed_context_records_the_exchange() -> None:
 
 async def test_zero_max_turns_blocks_before_calling_model() -> None:
     agent = _agent(StubModel([]))  # no scripted responses; must not be called
-    result = await Runtime(max_turns=0).run(agent, prompt="hello")
+    result = await Engine(max_turns=0).run(agent, prompt="hello")
     assert isinstance(result, Blocked)
     assert "max_turns" in result.reason
     assert result.context.turn == 0
@@ -37,7 +37,7 @@ async def test_zero_max_turns_blocks_before_calling_model() -> None:
 async def test_length_stop_reason_completes_with_text() -> None:
     # A modeled terminal reason (hit the token cap) still completes on its text.
     agent = _agent(StubModel([StubModel.text("partial", kind="length")]))
-    result = await Runtime().run(agent, prompt="go")
+    result = await Engine().run(agent, prompt="go")
     assert isinstance(result, Completed)
     assert result.output == "partial"
 
@@ -46,6 +46,6 @@ async def test_unhandled_stop_reason_blocks_rather_than_silently_completing() ->
     # A reason the core cannot act on must surface as Blocked (carrying the raw
     # vendor string), never fold quietly into Completed.
     agent = _agent(StubModel([StubModel.text("", kind="other", raw="weird_reason")]))
-    result = await Runtime().run(agent, prompt="go")
+    result = await Engine().run(agent, prompt="go")
     assert isinstance(result, Blocked)
     assert "weird_reason" in result.reason

@@ -1,145 +1,147 @@
 # Agentique
 
 A modular Python agent framework. It is a **single distribution** (`agentique`)
-built around a dependency-free **core** of contracts and an engine, plus
-submodules that provide concrete implementations. Everything imports under the
-`agentique.*` namespace.
+built around a **core** execution + topology substrate, plus submodules that
+provide concrete implementations. Everything imports under the `agentique.*`
+namespace.
 
-`agentique` pulls **zero third-party dependencies**. The only submodule that needs
-one — the Anthropic provider — keeps its SDK behind an optional extra, so you opt
-into it explicitly:
+Its only base third-party dependency is **Pydantic** (the neutral IR, typed I/O,
+durable pause/resume, and the event vocabulary are all Pydantic-backed). Provider
+SDKs and telemetry exporters stay behind optional extras, so a base install never
+pulls a model vendor's SDK or a telemetry stack:
 
 ```sh
-pip install agentique               # core + tools + memory + testing; no third-party deps
+pip install agentique               # core + tools + memory + testing (+ pydantic)
 pip install "agentique[anthropic]"  # adds the official `anthropic` SDK for agentique.anthropic
 ```
 
 ## Submodules
 
-| Import | What it provides | Third-party deps |
+| Import | What it provides | Extra deps |
 |---|---|---|
-| `agentique.core` | Seam Protocols (`Model`, `Tool`, `Memory`), value types, the `Result` union, and the `Runtime` engine | — |
+| `agentique.core` | Seam Protocols (`Model`, `Tool`, `Memory`), the neutral-IR value types, the `Result` union, the middleware onion, typed-I/O validation, the `Engine` (drives one agent) and the `Scheduler` (coordinates many) | — |
 | `agentique.tools` | Real `Tool`s: `ReadFile`, `ListDir`, `WriteFile`, `EditFile`, `RunCommand` (confined to a `Workspace`), `Delegate` (multi-agent), `AskHuman` (pause for input) | — |
 | `agentique.memory` | Durable `Memory`: `InMemoryStore`, `FileStore` | — |
-| `agentique.testing` | Offline test doubles: `StubModel`, `EchoTool` | — |
-| `agentique.anthropic` | `AnthropicModel` over the Anthropic Messages API | `anthropic` (via the `anthropic` extra) |
+| `agentique.testing` | Offline doubles: `StubModel`, `EchoTool`, `CollectingSink` | — |
+| `agentique.anthropic` | `AnthropicModel` over the Anthropic Messages API | `anthropic` (extra) |
 
 Two further layers express the structure the framework is built around —
 `console → harness → core` (the application talks to a human, the harness
-coordinates agents, the core is the generic framework). The **harness is the
-`agentique` root itself** — `agentique` *is* an agent harness built on top of
-`agentique.core`:
+coordinates work-products, the core is the execution substrate). The **harness is
+the `agentique` root itself**:
 
-| Import | What it provides | Third-party deps |
+| Import | What it provides | Extra deps |
 |---|---|---|
-| `agentique` (root) | Generic, domain-agnostic harness: `Coordinator` (dispatch, dispatch-by-`Role`, artifact promotion), `Role`, `Session`, `Artifact`, shared `Store` — `from agentique import …` | — |
+| `agentique` (root) | Generic, domain-agnostic harness: `Coordinator` (thin operator layer over the Scheduler), `Role`, `Session`, typed `Artifact` (+ provenance DAG), shared `Store` — `from agentique import …` | — |
 | `agentique.console` | The human-facing application: `Console` + the `agentique` CLI REPL | — |
 
-The `agentique` harness is deliberately generic and carries **no** domain specifics (no
-repos, git, diffs, or PRs); what the artifacts it coordinates *mean* is the
-application's concern. `agentique.console` is the only layer that talks to a human.
+The harness carries **no** domain specifics; what the artifacts it coordinates
+*mean* is the application's concern. `agentique.console` is the only layer that
+talks to a human.
 
 ## Public surface
 
 ### `agentique.core`
 
-The application-agnostic contracts and engine. **Zero third-party dependencies.**
+The execution + topology substrate.
 
 - **Seams (Protocols):** `Model`, `Tool`, `Memory` — structural interfaces;
-  implement by shape, no inheritance.
-- **Value types (frozen):** `Message`, `TextBlock`, `ToolUseBlock`,
-  `ToolResultBlock`, `ModelResponse`, `Context`, `Agent`, `Permissions`,
-  `ToolSpec`, `ToolResult`.
-- **Result union:** `Result = Completed | NeedsHuman | Blocked` — branch with an
-  exhaustive `match`. A run pauses as `NeedsHuman` carrying a resumable `Paused`
-  snapshot; `Runtime.resume(agent, paused, answer)` continues that exact run.
-- **Engine:** `Runtime` — drives one declarative `Agent` to a `Result` (assemble
-  context → call model → dispatch permitted tools → fold results → finish).
-  Run-control (`max_turns`) lives here, not on the `Agent`.
+  implement by shape, no inheritance. `Tool.__call__(ctx, arguments)` receives a
+  `RunContext` (run id, event-emit handle, and a `dispatch` handle when a Scheduler
+  drives it).
+- **Neutral IR (frozen, Pydantic):** `Message`, `TextBlock`, `ToolUseBlock`,
+  `ToolResultBlock`, `OpaqueBlock` (carries vendor blocks the core does not model —
+  thinking/citations/etc. — through verbatim), `ModelResponse`, neutral
+  `StopReason` (`kind` + raw vendor string), `Usage`, `Context`, `Agent`,
+  `Permissions`, `ToolSpec`, `ToolResult`. Provider adapters live in the provider
+  package; the IR is vendor-neutral and round-trippable.
+- **Result union:** `Result = Completed | NeedsHuman | Blocked`. A run pauses as
+  `NeedsHuman` carrying a resumable `Paused` snapshot; an unhandled stop reason
+  surfaces as `Blocked` rather than folding into a quiet success.
+- **Engine:** `Engine` — drives one declarative `Agent` to a `Result`. `max_turns`
+  lives here. Every step runs through a **middleware onion** (`Middleware`) at a
+  fixed set of points (turn / pre-model / model-call / tool-call); the default
+  chain is empty (the trivial path is unchanged). Built-ins: `TracingMiddleware`
+  (emits the event vocabulary), `PermissionMiddleware`, `CompactionMiddleware`.
+- **Scheduler:** `Scheduler` — registers agents by id and dispatches runs between
+  them (`register` / `dispatch` / `resume`), synchronously and deterministically;
+  tracks a lightweight `Run` (state + `Paused` snapshot + `parent_id` lineage) and
+  owns the single event stream.
+- **Permissions:** ordered `Rule`s resolved `deny > ask > allow`. A `deny` ends the
+  run; an `ask` joins the human-pause spine (`NeedsHuman`).
+- **Typed I/O:** an `Agent.output_type` and a `ToolSpec.args_model` (Pydantic
+  models) are validated by the Engine; a mismatch becomes a self-correctable error.
+- **Events:** a typed `Event` vocabulary + the `EventSink` seam (`NullSink`
+  default). Concrete exporters (e.g. OpenTelemetry) belong in a satellite extra.
+- **Compaction:** the `Compactor` seam + `EvictOldestToolResults` rung at the
+  pre-model point.
 
 ### `agentique.tools`
 
-Real `Tool`s — actions that cross an external boundary and are therefore
-permission-gated by the `Runtime`.
+Real `Tool`s — actions that cross an external boundary, permission-gated by the
+Engine.
 
-- **`ReadFile()`** — read the UTF-8 text contents of a file (read-only; failures
-  returned as error results, not raised).
-- **`Workspace(root)`** — a confined root directory. Not a `Tool` itself: the
-  tools below hold one and resolve every path against it, rejecting absolute paths
-  and `..` escapes, and pin commands to it. The jail lives in one place.
-- **`ListDir(workspace)`** — list a directory's entries within the workspace
-  (read-only).
-- **`WriteFile(workspace)`** — write/overwrite a file within the workspace
-  (creating parent dirs). World-changing, so confined.
-- **`EditFile(workspace)`** — replace the sole occurrence of a string in a
-  workspace file; errors on zero or ambiguous matches so the model can retry.
-- **`RunCommand(workspace, *, allowlist=…, timeout=30, output_limit=16384)`** —
-  run an allowlisted, shell-free `argv` command confined to the workspace root,
-  with a timeout and capped output. The most bounded tool; a non-zero exit is an
-  error result.
-- **`Delegate(child, *, name, description, runtime=None)`** — expose a child
-  `Agent` as a tool the parent may invoke. Pure mechanism for multi-agent
-  topologies: it carries no orchestration logic, and is gated by the parent's
-  permissions like any other tool.
-- **`AskHuman()`** — pause the run for human input. Raises the `PauseRequested`
-  control signal, which the `Runtime` turns into a `NeedsHuman` outcome carrying a
-  resumable snapshot. Call it alone in a turn.
+- **`ReadFile()`**, **`ListDir(workspace)`**, **`WriteFile(workspace)`**,
+  **`EditFile(workspace)`**, **`RunCommand(workspace, …)`** — file/command tools
+  confined to a **`Workspace(root)`** (rejects absolute paths and `..` escapes).
+- **`Delegate(child_id, *, name, description)`** — expose a Scheduler-registered
+  child agent as a tool; it dispatches via `ctx.dispatch`, so the child runs as its
+  own (lineage-tracked) run and its real `Result` flows back — a child pause becomes
+  a real pause of the parent. Pure mechanism, permission-gated like any tool.
+- **`AskHuman()`** — pause the run for human input (raises `PauseRequested`, which
+  the Engine turns into `NeedsHuman`). Call it alone in a turn.
 
 ### `agentique.memory`
 
-Durable, cross-run `Memory` implementations.
-
 - **`InMemoryStore()`** — a process-lifetime dict; ideal for tests.
-- **`FileStore(path)`** — durable storage backed by a single JSON file, written
-  atomically; file I/O runs off the event loop via `asyncio.to_thread`.
+- **`FileStore(path)`** — durable JSON-file storage, written atomically off the
+  event loop.
 
 ### `agentique.testing`
 
-Deterministic, offline doubles for exercising the agent loop without a network or
-API key.
-
-- **`StubModel(responses)`** — replays a scripted sequence of `ModelResponse`s,
-  one per `complete` call, and records every call as a `StubCall` for assertions.
-  Raises `StubModelExhausted` if called more times than scripted.
-- **`EchoTool(name="echo", *, is_error=False)`** — a `Tool` that echoes its
-  `value` argument back as the result and records every call.
+- **`StubModel(responses)`** — replays scripted `ModelResponse`s and records calls;
+  factories `StubModel.text(...)` / `StubModel.tool_call(...)`.
+- **`EchoTool(...)`** — a `Tool` that echoes its `value` argument and records calls.
+- **`CollectingSink()`** — an `EventSink` that collects emitted events in order.
 
 ### `agentique.anthropic`
 
-The Anthropic provider — requires the `anthropic` extra.
+The Anthropic provider (requires the `anthropic` extra). `AnthropicModel(model, *,
+max_tokens=4096, client=None)` satisfies `agentique.core.Model` and is the only
+boundary that maps the neutral IR to/from a vendor SDK. The model id has **no
+default** — supply a current one.
 
-```python
-from agentique.anthropic import AnthropicModel
+### `agentique` (harness root)
 
-model = AnthropicModel("<current-model-id>")  # id is environment-specific
-```
-
-`AnthropicModel(model, *, max_tokens=4096, client=None)` satisfies
-`agentique.core.Model`. The model id has **no default** — supply a current one
-(confirm it in the Anthropic console; do not hardcode a guess). Pass a custom
-`AsyncAnthropic` client to control auth, base URL, or retries.
+- **`Artifact`** — a durable unit of work with a **typed Pydantic `payload`**,
+  a provenance DAG (`derived_from`), and an application-defined `status` lifecycle.
+  `TextPayload` is the default carrier; `payload_text(payload)` renders a preview.
+- **`Coordinator`** — the operator layer over the `Scheduler`: `dispatch` /
+  `dispatch_role` launch runs and project the outcome into a proposed `Artifact`;
+  `resume(session_id, …)` continues a paused run; `approve` / `reject` /
+  `promote_artifact` drive the lifecycle. It holds **no** run-state copy.
+- **`Store`** — persists artifacts and session records over the `Memory` seam, and
+  persists paused runs (`load_paused_runs` re-pairs them after a restart). It takes
+  an app-supplied `payload_models` (kind→model) registry to rehydrate typed
+  payloads; unregistered kinds fall back to `TextPayload`.
+- **`Role`**, **`Session`** — a named specialist (agent + artifact kind) and the
+  harness's projection of one tracked run.
 
 ### `agentique.console`
 
 The application layer — a conversational console you can run.
 
-- **`Console`** / **`build_console(model, *, fleet_model=None, workspace_root="workspace")`**
-  — wires a conversational orchestrator over a `Coordinator` and registers the
-  **fleet** (`build_fleet`): a planner, explorer, builder, and reviewer, each a
-  `Role` whose file tools are confined to a shared `Workspace`. The orchestrator
-  holds a generic **`Dispatch`** tool: it dispatches a specialist by role
-  (`coordinator.dispatch_role`), which lands the specialist's output as a *proposed*
-  artifact. `send()` threads the conversation across turns via the pause/resume
-  spine; `approve` / `reject` are the operator's explicit promotions. The Builder
-  is the only do-er that changes the world (write/edit/run), and it self-verifies.
-- **CLI:** `agentique` (or `uv run agentique`) — a REPL over `Console`. It reads
-  `ANTHROPIC_API_KEY` from the environment or a local `.env` (parsed with the
-  standard library, no third-party loader), and supports `/artifacts`,
-  `/approve <id>`, `/reject <id>`, `/quit`.
+- **`build_console(model, *, fleet_model=None, workspace_root="workspace")`** —
+  wires a conversational orchestrator over a `Coordinator` and a fleet
+  (planner/explorer/builder/reviewer), each a `Role` confined to a shared
+  `Workspace`. The orchestrator holds a `Dispatch` tool (`coordinator.dispatch_role`)
+  that lands a specialist's output as a *proposed* artifact; `approve` / `reject`
+  are the operator's promotions.
+- **CLI:** `agentique` (or `uv run agentique`) — a REPL over `Console`; reads
+  `ANTHROPIC_API_KEY` from the environment or a local `.env`; supports
+  `/artifacts`, `/approve <id>`, `/reject <id>`, `/quit`.
 
 ## Layout
-
-Standard src-layout single package:
 
 ```
 pyproject.toml
@@ -147,41 +149,36 @@ src/agentique/
   __init__.py                                    # harness public surface (Coordinator, …)
   coordinator.py  session.py  artifact.py        # harness (generic), at the root
   store.py  role.py
-  core/  tools/  memory/  testing/  anthropic/   # framework
+  core/  tools/  memory/  testing/  anthropic/   # framework + satellites
   console/                                       # application (CLI)
 tests/
-  core/  tools/  memory/  testing/  anthropic/  test_import_discipline.py
 ```
 
 Two boundaries are enforced structurally by `tests/test_import_discipline.py`.
-The **zero-third-party** boundary: no module under `src/agentique` **except**
-`agentique.anthropic` imports anything outside the standard library and
-`agentique` itself. The **three-layer** boundary: the dependency arrow runs one
-way, `console → harness → core`, so `core` must not import the harness or
-`console`, and the harness must not import `console`.
+The **dependency boundary**: no module under `src/agentique` **except**
+`agentique.anthropic` imports a third-party root beyond the standard library,
+`agentique` itself, and the approved base deps (`pydantic`). The **three-layer**
+boundary: the dependency arrow runs one way, `console → harness → core`.
 
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```sh
-uv sync       # create the env and install agentique (with the anthropic extra) + dev tools
+uv sync       # create the env and install agentique (+ the anthropic extra) + dev tools
 make check    # ruff (lint + format), ty (types), pytest — the full gate
 ```
 
-Individual gates: `make lint`, `make type`, `make test`.
+Individual gates: `make lint`, `make type`, `make test`. The dev-only
+`observability/` and `scenarios/` packages (run-capture wrappers and dev REPLs)
+live at the repo root, are never shipped, and are never imported by `src/`.
+`make console` runs the instrumented dev REPL (writes `runs/<ts>-console/`).
 
-### Observing the console while testing
+## Headroom (extension points, not built this round)
 
-The shipped `agentique` CLI stays free of the dev-only `observability` layer. To
-talk to the console *with full run capture* while testing, use the observed dev
-REPL:
-
-```sh
-make console   # same Console, instrumented; writes runs/<ts>-console/
-```
-
-It wraps the orchestrator and the planner sub-agent with one shared recorder (by
-composition — no shipped-code dependency on `observability`) and writes a
-per-session trace — `events.jsonl`, `manifest.json`, and an anomaly-forward
-`digest.md` — refreshed after each turn and printed on exit.
+The architecture is intentionally modular: each subsystem is a seam plus the one or
+two rungs in use, with room to grow without a rewrite. Reachable additively:
+concurrency / pub-sub / mailboxes on the Scheduler bus; durable step-checkpointing
+beyond the persist-paused-runs rung; an OpenTelemetry exporter `EventSink` (in a
+satellite extra); model-summarization `Compactor`s; a permission rule DSL; a generic
+`RunContext[Deps]`; event-stream-based observability for delegation.

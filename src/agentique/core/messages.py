@@ -42,7 +42,7 @@ type StopKind = Literal[
 vocabulary: ``done`` (a normal end), ``tool_use`` (tool calls are pending and
 must be dispatched), ``length`` (hit a token cap), ``refusal``, ``paused`` (the
 provider paused mid-turn — e.g. a server-side tool), and ``other`` for anything
-the core does not recognise. The Runtime branches on ``tool_use``; anything it
+the core does not recognise. The Engine branches on ``tool_use``; anything it
 cannot act on it surfaces explicitly rather than folding into a quiet success."""
 
 

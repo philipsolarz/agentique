@@ -3,7 +3,7 @@ seams on one run, plus the run-level rollup.
 
 Every event is a frozen dataclass holding a snapshot taken *at record time* —
 sizes and counts are computed eagerly and argument mappings are copied, so a
-later mutation of something the Runtime reused cannot reach back and change what
+later mutation of something the Engine reused cannot reach back and change what
 was recorded. The union of per-call events is named ``CallEvent`` (not a bare
 ``Event``, which reads as :class:`asyncio.Event`).
 
@@ -68,7 +68,7 @@ type CallEvent = ModelCallEvent | ToolCallEvent
 
 @dataclass(frozen=True, slots=True)
 class Turn:
-    """One Runtime turn: the model call that opened it and the tool calls it
+    """One Engine turn: the model call that opened it and the tool calls it
     triggered (the tool calls folded back as the next user message)."""
 
     model: ModelCallEvent
@@ -78,7 +78,7 @@ class Turn:
 def group_into_turns(events: Sequence[CallEvent]) -> list[Turn]:
     """Group a flat event stream into turns. Each model call opens a turn; the tool
     calls until the next model call attach to it. A leading tool call with no model
-    call yet is ignored — the Runtime never produces one. Shared so the digest and
+    call yet is ignored — the Engine never produces one. Shared so the digest and
     the anomaly detector number turns identically."""
     turns: list[Turn] = []
     model: ModelCallEvent | None = None
@@ -100,7 +100,7 @@ def group_into_turns(events: Sequence[CallEvent]) -> list[Turn]:
 class RunRecord:
     """The run-level rollup that serializes to ``manifest.json``. ``outcome`` is the
     terminal :class:`~agentique.core.result.Result` variant name; ``turns`` is the
-    model-call count (one per Runtime turn) and ``tool_calls`` the tool-invocation
+    model-call count (one per Engine turn) and ``tool_calls`` the tool-invocation
     count; ``anomalies`` is the list of contract gaps the run surfaced."""
 
     scenario: str

@@ -1,7 +1,7 @@
 """A deterministic, offline ``Tool`` for tests.
 
 ``EchoTool`` echoes one of its arguments back as the result and records every
-call it received, so tests can assert both that the Runtime dispatched the call
+call it received, so tests can assert both that the Engine dispatched the call
 and what it fed back — without crossing any real external boundary. It is shipped
 (not test-only) so the application layer can reuse it, mirroring :class:`StubModel`.
 """

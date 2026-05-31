@@ -49,7 +49,7 @@ class ToolCalled:
 
 @dataclass(frozen=True, slots=True)
 class TurnBoundary:
-    """One Runtime turn completed; ``turn`` is the new turn count."""
+    """One Engine turn completed; ``turn`` is the new turn count."""
 
     turn: int
 

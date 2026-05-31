@@ -1,8 +1,8 @@
-"""Runtime tool dispatch + permission enforcement, exercised offline."""
+"""Engine tool dispatch + permission enforcement, exercised offline."""
 
 from collections.abc import Mapping
 
-from agentique.core import Agent, Blocked, Completed, Permissions, Runtime
+from agentique.core import Agent, Blocked, Completed, Engine, Permissions
 from agentique.core.messages import ToolResultBlock
 from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
@@ -27,7 +27,7 @@ async def test_dispatches_tool_then_completes() -> None:
             StubModel.text("done: ping"),
         ]
     )
-    result = await Runtime().run(_agent(model, tool, Permissions()), prompt="go")
+    result = await Engine().run(_agent(model, tool, Permissions()), prompt="go")
     assert isinstance(result, Completed)
     assert result.output == "done: ping"
     # the tool actually ran with the model-supplied arguments...
@@ -48,7 +48,7 @@ async def test_denied_permission_blocks_without_running_tool() -> None:
     tool = EchoTool()
     model = StubModel([StubModel.tool_call("c1", "echo", {"value": "x"})])
     permissions = Permissions.allowlist(())  # nothing allowed
-    result = await Runtime().run(_agent(model, tool, permissions), prompt="go")
+    result = await Engine().run(_agent(model, tool, permissions), prompt="go")
     assert isinstance(result, Blocked)
     assert "permission denied" in result.reason
     assert tool.calls == []
@@ -63,7 +63,7 @@ async def test_allowlisted_tool_is_dispatched() -> None:
         ]
     )
     permissions = Permissions.allowlist({"echo"})
-    result = await Runtime().run(_agent(model, tool, permissions), prompt="go")
+    result = await Engine().run(_agent(model, tool, permissions), prompt="go")
     assert isinstance(result, Completed)
     assert tool.calls == [{"value": "ok"}]
 
@@ -71,7 +71,7 @@ async def test_allowlisted_tool_is_dispatched() -> None:
 async def test_unknown_tool_blocks() -> None:
     tool = EchoTool(name="echo")
     model = StubModel([StubModel.tool_call("c1", "nonexistent", {})])
-    result = await Runtime().run(_agent(model, tool, Permissions()), prompt="go")
+    result = await Engine().run(_agent(model, tool, Permissions()), prompt="go")
     assert isinstance(result, Blocked)
     assert "unknown tool" in result.reason
 
@@ -84,7 +84,7 @@ async def test_tool_error_is_reported_to_model_not_fatal() -> None:
             StubModel.text("recovered"),
         ]
     )
-    result = await Runtime().run(_agent(model, tool, Permissions()), prompt="go")
+    result = await Engine().run(_agent(model, tool, Permissions()), prompt="go")
     # a tool returning an error result is fed back, and the run continues.
     assert isinstance(result, Completed)
     assert result.output == "recovered"
@@ -124,7 +124,7 @@ async def test_tool_that_raises_is_recoverable_not_fatal() -> None:
         ]
     )
     agent = Agent(name="t", instructions="x", model=model, tools=(_RaisingTool(),))
-    result = await Runtime().run(agent, prompt="go")
+    result = await Engine().run(agent, prompt="go")
     assert isinstance(result, Completed)
     assert result.output == "recovered"
     tool_results = [

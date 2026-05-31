@@ -109,7 +109,7 @@ def test_max_turns_block_is_flagged() -> None:
 
 
 def test_standing_notes_are_empty_after_the_gaps_closed() -> None:
-    # The realignment closed both standing gaps: the Runtime now surfaces unhandled
+    # The realignment closed both standing gaps: the Engine now surfaces unhandled
     # stop reasons explicitly, and ModelResponse carries usage. No standing note
     # remains — in particular the old "usage is not capturable" note is gone.
     assert standing_notes() == ()

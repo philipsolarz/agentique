@@ -1,7 +1,7 @@
 """Agentique: an agent *harness* framework built on top of ``agentique.core``.
 
 ``agentique.core`` is the application-agnostic agent framework — the seam Protocols
-(Model, Tool, Memory), the value types, and the Runtime that drives a single agent.
+(Model, Tool, Memory), the value types, and the Engine that drives a single agent.
 This package, the ``agentique`` root, is the generic harness that *coordinates*
 agents built on that framework: launching them, pausing and resuming them, and
 converging their output into durable state. Its public surface lives right here —

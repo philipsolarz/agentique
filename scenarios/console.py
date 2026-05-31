@@ -20,7 +20,7 @@ from agentique.console.agents import build_orchestrator
 from agentique.console.cli import load_env
 from agentique.console.console import Console
 from agentique.console.fleet import build_fleet
-from agentique.core import Engine, Model, Result, Runtime, Scheduler
+from agentique.core import Engine, Model, Result, Scheduler
 from agentique.tools import Workspace
 from observability import (
     InMemoryRecorder,
@@ -58,7 +58,7 @@ def wire(
         )
     orchestrator = instrument_agent(build_orchestrator(model, coordinator), recorder)
     return (
-        Console(orchestrator, coordinator=coordinator, runtime=Runtime(max_turns=40)),
+        Console(orchestrator, coordinator=coordinator, engine=Engine(max_turns=40)),
         recorder,
     )
 

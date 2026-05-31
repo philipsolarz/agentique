@@ -12,7 +12,7 @@ This is a plain helper, not a :class:`~agentique.core.tool.Tool` — the tools h
 ``Workspace`` and delegate their path resolution and subprocess execution to it, so
 the jail logic lives in exactly one place. A jail violation raises
 :class:`WorkspaceError`; the tools catch it and fold it into an error result,
-keeping ``PauseRequested`` the sole control signal the Runtime sees.
+keeping ``PauseRequested`` the sole control signal the Engine sees.
 """
 
 from __future__ import annotations

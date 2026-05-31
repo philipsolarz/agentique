@@ -1,5 +1,5 @@
 """The scenario driver: wrap an agent in the recording layer, drive it through the
-real Runtime, and write the run's three artifacts.
+real Engine, and write the run's three artifacts.
 
 It takes a fully-built :class:`Agent` and instruments it by composition — the
 agent's model and tools are wrapped with a single shared recorder (so events
@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentique.core import Agent, Runtime
+from agentique.core import Agent, Engine
 from agentique.core.result import Result
 from observability import (
     InMemoryRecorder,
@@ -46,7 +46,7 @@ async def run_scenario(
     agent: Agent,
     prompt: str,
     *,
-    runtime: Runtime | None = None,
+    runtime: Engine | None = None,
     runs_root: Path | None = None,
     timestamp: str | None = None,
     recorder: InMemoryRecorder | None = None,
@@ -58,7 +58,7 @@ async def run_scenario(
     Pass ``recorder`` to share one across agents — e.g. a delegation scenario that
     wrapped its child's model/tools with the same recorder before building the
     parent, so the child's calls interleave into this capture."""
-    runtime = runtime if runtime is not None else Runtime()
+    runtime = runtime if runtime is not None else Engine()
     runs_root = runs_root if runs_root is not None else _RUNS_ROOT
 
     recorder = recorder if recorder is not None else InMemoryRecorder()

@@ -59,7 +59,7 @@ def standing_notes() -> tuple[str, ...]:
     in the cross-scenario summary, not repeated per digest.
 
     Empty since the realignment closed the two standing gaps this layer used to
-    flag: the Runtime now surfaces unhandled stop reasons explicitly (no silent
+    flag: the Engine now surfaces unhandled stop reasons explicitly (no silent
     fold into ``Completed``), and ``ModelResponse`` carries :class:`Usage` that the
     Anthropic adapter populates — so neither is a limitation any more. Kept as the
     seam for any future framework-wide note.
@@ -89,12 +89,12 @@ def _model_anomalies(number: int, event: ModelCallEvent) -> list[str]:
 def _tool_anomalies(locator: str, event: ToolCallEvent) -> list[str]:
     found: list[str] = []
     if event.raised == "PauseRequested":
-        # ask_human pauses by raising PauseRequested, a control signal the Runtime
+        # ask_human pauses by raising PauseRequested, a control signal the Engine
         # turns into NeedsHuman — expected, not a fault.
         return found
     if event.raised is not None:
         found.append(
-            f"{locator}: tool '{event.tool_name}' raised {event.raised}; the Runtime "
+            f"{locator}: tool '{event.tool_name}' raised {event.raised}; the Engine "
             "folds a raised tool into an error result the model can recover from"
         )
     elif event.is_error:

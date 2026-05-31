@@ -20,8 +20,6 @@ The loop:
    requested tools (``stop_reason.kind == "tool_use"``) — dispatch them and fold
    the results back as a user message, continuing; otherwise return a terminal
    Result.
-
-``Runtime`` remains as a deprecated alias for ``Engine`` while call sites migrate.
 """
 
 from __future__ import annotations
@@ -341,8 +339,3 @@ class Engine:
                 )
 
         return cast(ToolResult, await apply(chain, ToolPoint(call), _core))
-
-
-# ``Runtime`` is the former name of ``Engine``; kept as an alias while call sites in
-# the harness, console, tools, and scenarios migrate. Removed in the final sweep.
-Runtime = Engine

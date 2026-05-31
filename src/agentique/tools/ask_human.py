@@ -1,14 +1,14 @@
 """The ``ask_human`` tool: pause a run to consult the human operator.
 
 Unlike an ordinary tool it never returns a result on the happy path — it raises
-:class:`~agentique.core.control.PauseRequested`, the control signal the Runtime
+:class:`~agentique.core.control.PauseRequested`, the control signal the Engine
 turns into a ``NeedsHuman`` outcome carrying a resumable
 :class:`~agentique.core.result.Paused` snapshot. It is still structurally a
 :class:`~agentique.core.tool.Tool` (it exposes a ``spec`` and an async
-``__call__``); the Runtime, not the tool, owns what pausing means.
+``__call__``); the Engine, not the tool, owns what pausing means.
 
 Call it ALONE in a turn — never alongside other tools. Resume answers the single
-pending tool call, so the Runtime rejects a turn that mixes ``ask_human`` with
+pending tool call, so the Engine rejects a turn that mixes ``ask_human`` with
 other calls.
 """
 

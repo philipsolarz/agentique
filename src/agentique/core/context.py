@@ -9,8 +9,8 @@ Two deliberate simplifications, flagged for review:
 * **Tool results** are represented as ``ToolResultBlock`` entries inside the
   message history (the Anthropic-native shape), not as a separate field — this
   avoids a second source of truth for the same data.
-* **The stop condition** is owned by the Runtime (per the agreed Agent/Runtime
-  split), not stored here. Context records *what happened*; the Runtime decides
+* **The stop condition** is owned by the Engine (per the agreed Agent/Engine
+  split), not stored here. Context records *what happened*; the Engine decides
   *when to stop*.
 """
 
@@ -25,7 +25,7 @@ from agentique.core.messages import Message
 class Context:
     """An immutable snapshot of a single run's working state.
 
-    The Runtime threads a fresh Context through each step rather than mutating
+    The Engine threads a fresh Context through each step rather than mutating
     one in place, keeping run state a value like everything else in the core.
     """
 

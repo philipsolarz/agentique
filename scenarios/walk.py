@@ -1,7 +1,7 @@
 """Part 2 — the first live walk.
 
 A real Agent + AnthropicModel + the ReadFile tool, wrapped in the recording layer
-and driven through the real Runtime: read a file and summarize it. The first time
+and driven through the real Engine: read a file and summarize it. The first time
 the whole stack runs against the live API rather than a stub.
 
 Requires .env with ANTHROPIC_API_KEY and ANTHROPIC_MODEL (see .env.example).

@@ -1,7 +1,7 @@
 """The Tool seam: an action that crosses an external boundary.
 
 A Tool may perform I/O — filesystem, network, spawning another agent — and is
-therefore permission-gated (the check lives in the Runtime, not the tool). The
+therefore permission-gated (the check lives in the Engine, not the tool). The
 seam is structural: any object exposing a ``spec`` and an async ``__call__`` of
 the right shape *is* a Tool, with no inheritance required.
 """
@@ -39,7 +39,7 @@ class ToolSpec:
 
 @dataclass(frozen=True, slots=True)
 class ToolResult:
-    """The outcome of running a tool. The Runtime pairs this with the
+    """The outcome of running a tool. The Engine pairs this with the
     originating call id to build a ``ToolResultBlock`` for the next model turn."""
 
     content: str
@@ -48,7 +48,7 @@ class ToolResult:
 
 class Tool(Protocol):
     """An external action the model may invoke, subject to the agent's
-    permissions (enforced by the Runtime, not by the tool itself)."""
+    permissions (enforced by the Engine, not by the tool itself)."""
 
     @property
     def spec(self) -> ToolSpec:

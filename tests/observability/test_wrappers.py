@@ -11,7 +11,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from agentique.core import Agent, Runtime
+from agentique.core import Agent, Engine
 from agentique.core.run_context import RunContext
 from agentique.core.tool import ToolResult, ToolSpec
 from agentique.testing import EchoTool, StubModel, StubModelExhausted
@@ -29,7 +29,7 @@ def _script() -> list:
 
 
 async def test_wrapped_run_yields_identical_result() -> None:
-    runtime = Runtime()
+    runtime = Engine()
 
     unwrapped = Agent(
         name="a", instructions="sys", model=StubModel(_script()), tools=(EchoTool(),)

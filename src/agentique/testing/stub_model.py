@@ -1,7 +1,7 @@
 """A deterministic, offline Model for tests.
 
 ``StubModel`` returns a pre-scripted sequence of responses and records every
-call it received. This lets the Agent/Runtime loop (A3) be exercised
+call it received. This lets the Agent/Engine loop (A3) be exercised
 deterministically without a network or API key — the central reason the Model
 seam exists. It is shipped (not test-only) so the application layer can reuse it.
 """

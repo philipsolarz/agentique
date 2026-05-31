@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from agentique.anthropic import AnthropicModel
-from agentique.core import Agent, Runtime
+from agentique.core import Agent, Engine
 from agentique.tools import ReadFile
 from observability import standing_notes
 from scenarios.driver import ScenarioRun, run_scenario
@@ -99,7 +99,7 @@ async def _max_turns_blocked(stamp: str) -> ScenarioRun:
         "max_turns_blocked",
         agent,
         "Read README.md and summarize it.",
-        runtime=Runtime(max_turns=1),
+        runtime=Engine(max_turns=1),
         timestamp=stamp,
     )
 

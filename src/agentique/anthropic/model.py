@@ -51,7 +51,7 @@ _ContentBlockParam = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam
 
 # How Anthropic's vendor stop reasons map onto the neutral StopKind. Anything not
 # listed (a reason the SDK adds later that we have not modeled) becomes ``other``
-# and is surfaced by the Runtime rather than folded into a quiet completion.
+# and is surfaced by the Engine rather than folded into a quiet completion.
 _STOP_KIND_BY_VENDOR: dict[str, StopKind] = {
     "end_turn": "done",
     "stop_sequence": "done",
